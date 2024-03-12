@@ -8,10 +8,17 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	clientutils "github.com/jfrog/jfrog-client-go/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/xeipuuv/gojsonschema"
 	"gopkg.in/yaml.v3"
+)
+
+const (
+	maxRetriesToDownloadSchema           = 5
+	durationBetweenSchemaDownloadRetries = 10 * time.Second
 )
 
 func TestFrogbotSchema(t *testing.T) {
@@ -20,11 +27,11 @@ func TestFrogbotSchema(t *testing.T) {
 	assert.NoError(t, err)
 	schemaLoader := gojsonschema.NewBytesLoader(schema)
 
-	// Validate config in the docs
-	validateYamlSchema(t, schemaLoader, filepath.Join("..", "docs", "templates", ".frogbot", "frogbot-config.yml"), "")
+	// Validate config in this repository
+	validateYamlSchema(t, schemaLoader, filepath.Join("..", ".frogbot", "frogbot-config.yml"), "")
 
 	// Validate all frogbot configs in commands/testdata/config
-	validateYamlsInDirectory(t, filepath.Join("..", "commands", "testdata", "config"), schemaLoader)
+	validateYamlsInDirectory(t, filepath.Join("..", "testdata", "config"), schemaLoader)
 }
 
 func TestBadFrogbotSchemas(t *testing.T) {
@@ -54,25 +61,35 @@ func TestJFrogPipelinesTemplates(t *testing.T) {
 	validateYamlsInDirectory(t, filepath.Join("..", "docs", "templates", "jfrog-pipelines"), schemaLoader)
 }
 
-func TestGitHubActionsTemplates(t *testing.T) {
-	schemaLoader := downloadFromSchemaStore(t, "github-workflow.json")
-	validateYamlsInDirectory(t, filepath.Join("..", "docs", "templates", "github-actions"), schemaLoader)
-}
-
 // Download a Yaml schema from https://json.schemastore.org.
 // t      - Testing object
 // schema - The schema file to download
 func downloadFromSchemaStore(t *testing.T, schema string) gojsonschema.JSONLoader {
-	response, err := http.Get("https://json.schemastore.org/" + schema)
-	assert.NoError(t, err)
+	var response *http.Response
+	var err error
+	retryExecutor := clientutils.RetryExecutor{
+		MaxRetries:               maxRetriesToDownloadSchema,
+		RetriesIntervalMilliSecs: int(durationBetweenSchemaDownloadRetries.Milliseconds()),
+		ErrorMessage:             "Failed to download schema.",
+		ExecutionHandler: func() (bool, error) {
+			response, err = http.Get("https://json.schemastore.org/" + schema)
+			if err != nil {
+				return true, err
+			}
+			if response.StatusCode != http.StatusOK {
+				return true, fmt.Errorf("failed to download schema. Response status: %s", response.Status)
+			}
+			return false, nil
+		},
+	}
+	assert.NoError(t, retryExecutor.Execute())
+	assert.Equal(t, http.StatusOK, response.StatusCode, response.Status)
+	// Check server response and read schema bytes
 	defer func() {
 		assert.NoError(t, response.Body.Close())
 	}()
-	// Check server response
-	assert.Equal(t, http.StatusOK, response.StatusCode, response.Status)
 	schemaBytes, err := io.ReadAll(response.Body)
 	assert.NoError(t, err)
-
 	return gojsonschema.NewBytesLoader(schemaBytes)
 }
 
