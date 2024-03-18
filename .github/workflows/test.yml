@@ -32,9 +32,9 @@ jobs:
             echo "Working in the dev-master environment."
           fi
           echo "JF_URL=${{ github.event_name == 'workflow_dispatch' && secrets.DEV_MASTER_PLATFORM_URL || secrets.PLATFORM_URL }}"  >> $GITHUB_ENV
-          echo "::add-mask::${{ env.JF_URL }}"
+          echo "::add-mask::$env.JF_URL "
           echo "JF_ACCESS_TOKEN=${{ github.event_name == 'workflow_dispatch' && secrets.DEV_MASTER_PLATFORM_ADMIN_TOKEN || secrets.PLATFORM_ADMIN_TOKEN }}"  >> $GITHUB_ENV
-          echo "::add-mask::${{ env.JF_ACCESS_TOKEN }}"
+          echo "::add-mask::$env.JF_ACCESS_TOKEN"
 
       - name: Checkout code
         uses: actions/checkout@v4
