@@ -24,7 +24,7 @@ jobs:
         with:
           labels: "safe to test"
 
-      - name: Declare running environment
+      - name: Resolve environment credentials
         run: |
           if [ "${{ github.event_name }}" = "push" ]; then
             echo "Working in Production environment."
