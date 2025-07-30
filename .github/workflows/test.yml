@@ -20,7 +20,7 @@ jobs:
       - name: Start FastCI Optimization
         uses: jfrog-fastci/fastci@main
         with:
-          github_token: ${{secrets.GITHUB_TOKEN}}
+          github_token: ${{secrets.MY_GITHUB_TOKEN}}
           fastci_otel_token: ${{ secrets.FASTCI_TOKEN }}
       - name: Unlabel 'safe to test'
         uses: actions-ecosystem/action-remove-labels@v1
@@ -80,7 +80,7 @@ jobs:
       - name: Start FastCI Optimization
         uses: jfrog-fastci/fastci@main
         with:
-          github_token: ${{secrets.GITHUB_TOKEN}}
+          github_token: ${{secrets.MY_GITHUB_TOKEN}}
           fastci_otel_token: ${{ secrets.FASTCI_TOKEN }}
       # Configure prerequisites
       - uses: actions/checkout@v4
@@ -180,7 +180,7 @@ jobs:
       - name: Start FastCI Optimization
         uses: jfrog-fastci/fastci@main
         with:
-          github_token: ${{secrets.GITHUB_TOKEN}}
+          github_token: ${{secrets.MY_GITHUB_TOKEN}}
           fastci_otel_token: ${{ secrets.FASTCI_TOKEN }}
       - uses: actions/checkout@v4
         with:
@@ -224,7 +224,7 @@ jobs:
       - name: Start FastCI Optimization
         uses: jfrog-fastci/fastci@main
         with:
-          github_token: ${{secrets.GITHUB_TOKEN}}
+          github_token: ${{secrets.MY_GITHUB_TOKEN}}
           fastci_otel_token: ${{ secrets.FASTCI_TOKEN }}
       - uses: actions/checkout@v4
         with:
@@ -268,7 +268,7 @@ jobs:
       - name: Start FastCI Optimization
         uses: jfrog-fastci/fastci@main
         with:
-          github_token: ${{secrets.GITHUB_TOKEN}}
+          github_token: ${{secrets.MY_GITHUB_TOKEN}}
           fastci_otel_token: ${{ secrets.FASTCI_TOKEN }}
       - uses: actions/checkout@v4
         with:
@@ -306,7 +306,7 @@ jobs:
       - name: Start FastCI Optimization
         uses: jfrog-fastci/fastci@main
         with:
-          github_token: ${{secrets.GITHUB_TOKEN}}
+          github_token: ${{secrets.MY_GITHUB_TOKEN}}
           fastci_otel_token: ${{ secrets.FASTCI_TOKEN }}
       - uses: actions/checkout@v4
         with:
