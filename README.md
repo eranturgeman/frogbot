@@ -1,6 +1,6 @@
 <div align="center">
   
-# JFrog Frogbot!
+# JFrog Frogbot!!
 
 [![Frogbot](images/frogbot-intro.png)](#readme)
 
