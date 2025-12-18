@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/jfrog/gofrog/datastructures"
+	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/jfrog/froggit-go/vcsclient"
 	"github.com/jfrog/jfrog-cli-security/utils/formats"
-	"github.com/jfrog/jfrog-cli-security/utils/formats/violationutils"
 	"github.com/jfrog/jfrog-cli-security/utils/jasutils"
 	"github.com/jfrog/jfrog-cli-security/utils/results"
 	"github.com/jfrog/jfrog-cli-security/utils/results/conversion"
@@ -30,6 +30,12 @@ const (
 )
 
 type ScanPullRequestCmd struct{}
+
+// targetPair represents a matched pair of source and target scan results
+type targetPair struct {
+	source *results.TargetResults
+	target *results.TargetResults
+}
 
 func (pr *ScanPullRequestCmd) Run(repository utils.Repository, client vcsclient.VcsClient, frogbotRepoConnection *utils.UrlAccessChecker) (err error) {
 	repoConfig := &repository
@@ -175,6 +181,9 @@ func auditPullRequestSourceCode(repoConfig *utils.Repository, scanDetails *utils
 	//		return
 	//	}
 	//}
+
+	filterFailedScansIfScannersFailuresAreAllowed(scanDetails.ResultsToCompare, scanResults, repoConfig.Params.ConfigProfile.GeneralConfig.FailUponAnyScannerError, sourceBranchWd, targetBranchWd)
+
 	issuesCollection, e := scanResultsToIssuesCollection(scanResults, workingDirs...)
 	if e != nil {
 		err = errors.Join(err, fmt.Errorf("failed to get issues for pull request. Error: %s", e.Error()))
@@ -182,6 +191,7 @@ func auditPullRequestSourceCode(repoConfig *utils.Repository, scanDetails *utils
 	return
 }
 
+/*
 // if we found any error in any of its results (non-zero status code) in either source or target results.
 // This logic prevents us from presenting incorrect results due to an incomplete scan that produced incomplete results that might affect the diff process.
 func filterOutFailedScans(targetResults, sourceResults *results.SecurityCommandResults) error {
@@ -198,58 +208,58 @@ func filterOutFailedScans(targetResults, sourceResults *results.SecurityCommandR
 		targetResult := targetResults.Targets[idx]
 		sourceResult := sourceResults.Targets[idx]
 
-		filterOutScaResultsIfScanFailed(targetResult, sourceResult, sourceResults.Violations)
-		filterJasResultsIfScanFailed(targetResult, sourceResult, results.CmdStepContextualAnalysis)
-		filterJasResultsIfScanFailed(targetResult, sourceResult, results.CmdStepSecrets)
-		filterJasResultsIfScanFailed(targetResult, sourceResult, results.CmdStepIaC)
-		filterJasResultsIfScanFailed(targetResult, sourceResult, results.CmdStepSast)
+		filterOutScaResultsIfScanFailedOld(targetResult, sourceResult, sourceResults.Violations)
+		filterJasResultsIfScanFailedOld(targetResult, sourceResult, results.CmdStepContextualAnalysis)
+		filterJasResultsIfScanFailedOld(targetResult, sourceResult, results.CmdStepSecrets)
+		filterJasResultsIfScanFailedOld(targetResult, sourceResult, results.CmdStepIaC)
+		filterJasResultsIfScanFailedOld(targetResult, sourceResult, results.CmdStepSast)
 	}
 	return nil
 }
 
-func filterJasResultsIfScanFailed(targetResult, sourceResult *results.TargetResults, cmdStep results.SecurityCommandStep) {
+func filterJasResultsIfScanFailedOld(targetResult, sourceResult *results.TargetResults, cmdStep results.SecurityCommandStep) {
 	sourceResults := []*results.TargetResults{sourceResult}
 	targetResults := []*results.TargetResults{targetResult}
 	switch cmdStep {
 	case results.CmdStepContextualAnalysis:
-		if isScanFailedInSourceOrTarget(sourceResults, targetResults, cmdStep) {
+		if isScanFailedInSourceOrTargetOld(sourceResults, targetResults, cmdStep) {
 			log.Debug(fmt.Sprintf(vulnerabilitiesFilteringErrorMessage, cmdStep))
 			sourceResult.JasResults.ApplicabilityScanResults = nil
 		}
 	case results.CmdStepSecrets:
-		if isScanFailedInSourceOrTarget(sourceResults, targetResults, cmdStep) {
+		if isScanFailedInSourceOrTargetOld(sourceResults, targetResults, cmdStep) {
 			log.Debug(fmt.Sprintf(vulnerabilitiesFilteringErrorMessage, cmdStep))
 			sourceResult.JasResults.JasVulnerabilities.SecretsScanResults = nil
 		}
 		if (sourceResult.JasResults.JasViolations.SecretsScanResults != nil || targetResult.JasResults.JasViolations.SecretsScanResults != nil) &&
-			isScanFailedInSourceOrTarget(sourceResults, targetResults, cmdStep) {
+			isScanFailedInSourceOrTargetOld(sourceResults, targetResults, cmdStep) {
 			log.Debug(fmt.Sprintf(violationsFilteringErrorMessage, cmdStep))
 			sourceResult.JasResults.JasViolations.SecretsScanResults = nil
 		}
 	case results.CmdStepIaC:
-		if isScanFailedInSourceOrTarget(sourceResults, targetResults, cmdStep) {
+		if isScanFailedInSourceOrTargetOld(sourceResults, targetResults, cmdStep) {
 			log.Debug(fmt.Sprintf(vulnerabilitiesFilteringErrorMessage, cmdStep))
 			sourceResult.JasResults.JasVulnerabilities.IacScanResults = nil
 		}
 
-		if (sourceResult.JasResults.JasViolations.IacScanResults != nil || targetResult.JasResults.JasViolations.IacScanResults != nil) && isScanFailedInSourceOrTarget(sourceResults, targetResults, cmdStep) {
+		if (sourceResult.JasResults.JasViolations.IacScanResults != nil || targetResult.JasResults.JasViolations.IacScanResults != nil) && isScanFailedInSourceOrTargetOld(sourceResults, targetResults, cmdStep) {
 			log.Debug(fmt.Sprintf(violationsFilteringErrorMessage, cmdStep))
 			sourceResult.JasResults.JasViolations.IacScanResults = nil
 		}
 	case results.CmdStepSast:
-		if isScanFailedInSourceOrTarget(sourceResults, targetResults, cmdStep) {
+		if isScanFailedInSourceOrTargetOld(sourceResults, targetResults, cmdStep) {
 			log.Debug(fmt.Sprintf(vulnerabilitiesFilteringErrorMessage, cmdStep))
 			sourceResult.JasResults.JasVulnerabilities.SastScanResults = nil
 		}
 
-		if (sourceResult.JasResults.JasViolations.SastScanResults != nil || targetResult.JasResults.JasViolations.SastScanResults != nil) && isScanFailedInSourceOrTarget(sourceResults, targetResults, cmdStep) {
+		if (sourceResult.JasResults.JasViolations.SastScanResults != nil || targetResult.JasResults.JasViolations.SastScanResults != nil) && isScanFailedInSourceOrTargetOld(sourceResults, targetResults, cmdStep) {
 			log.Debug(fmt.Sprintf(violationsFilteringErrorMessage, cmdStep))
 			sourceResult.JasResults.JasViolations.SastScanResults = nil
 		}
 	}
 }
 
-func isScanFailedInSourceOrTarget(sourceResults, targetResults []*results.TargetResults, step results.SecurityCommandStep) bool {
+func isScanFailedInSourceOrTargetOld(sourceResults, targetResults []*results.TargetResults, step results.SecurityCommandStep) bool {
 	for _, scanResult := range sourceResults {
 		if scanResult.ResultsStatus.IsScanFailed(step) {
 			return true
@@ -264,7 +274,7 @@ func isScanFailedInSourceOrTarget(sourceResults, targetResults []*results.Target
 	return false
 }
 
-func filterOutScaResultsIfScanFailed(targetResult, sourceResult *results.TargetResults, sourceViolations *violationutils.Violations) {
+func filterOutScaResultsIfScanFailedOld(targetResult, sourceResult *results.TargetResults, sourceViolations *violationutils.Violations) {
 	// Filter out new Sca results
 	if sourceResult.ResultsStatus.IsScanFailed(results.CmdStepSca) || targetResult.ResultsStatus.IsScanFailed(results.CmdStepSca) {
 		var statusCode *int
@@ -305,6 +315,258 @@ func sortTargetsByPhysicalLocation(targetResults, sourceResults *results.Securit
 	}
 	return nil
 }
+
+*/
+
+// =======================================================================================
+// When allowPartialResults is enabled, and we are performing a diff scan (both source & target results exist),
+// we filter out a scanner results if we found any error in any of its results (non-zero status code) in either source or target results.
+// This logic prevents us from presenting incorrect results due to an incomplete scan that produced incomplete results that might affect the diff process.
+func filterFailedScansIfScannersFailuresAreAllowed(targetResults, sourceResults *results.SecurityCommandResults, failUponAnyScannerError bool, sourceWdPrefix, targetWdPrefix string) {
+	if failUponAnyScannerError {
+		return
+	}
+	if targetResults == nil {
+		// If IncludeAllVulnerabilities is applied, only sourceResults exists, and we don't need to filter anything - we present results we have
+		return
+	}
+
+	matchedByLocation, matchedByName, unmatchedSource := buildTargetMappings(targetResults, sourceResults, sourceWdPrefix, targetWdPrefix)
+
+	for _, targetSourceResultsPair := range matchedByLocation {
+		log.Debug(fmt.Sprintf("removing failing scans results out of source result located in '%s' if exists", targetSourceResultsPair.source.Target))
+		filterScaResultsIfScanFailed(targetSourceResultsPair.target, targetSourceResultsPair.source)
+		filterJasResultsIfScanFailed(targetSourceResultsPair.target, targetSourceResultsPair.source, results.CmdStepContextualAnalysis)
+		filterJasResultsIfScanFailed(targetSourceResultsPair.target, targetSourceResultsPair.source, results.CmdStepSecrets)
+		filterJasResultsIfScanFailed(targetSourceResultsPair.target, targetSourceResultsPair.source, results.CmdStepIaC)
+		filterJasResultsIfScanFailed(targetSourceResultsPair.target, targetSourceResultsPair.source, results.CmdStepSast)
+	}
+
+	for _, targetSourceResultsPair := range matchedByName {
+		log.Debug(fmt.Sprintf("removing failing scans results out of source result named '%s', if exists", targetSourceResultsPair.source.Name))
+		filterScaResultsIfScanFailed(targetSourceResultsPair.target, targetSourceResultsPair.source)
+		filterJasResultsIfScanFailed(targetSourceResultsPair.target, targetSourceResultsPair.source, results.CmdStepContextualAnalysis)
+		filterJasResultsIfScanFailed(targetSourceResultsPair.target, targetSourceResultsPair.source, results.CmdStepSecrets)
+		filterJasResultsIfScanFailed(targetSourceResultsPair.target, targetSourceResultsPair.source, results.CmdStepIaC)
+		filterJasResultsIfScanFailed(targetSourceResultsPair.target, targetSourceResultsPair.source, results.CmdStepSast)
+	}
+
+	for _, sourceResult := range unmatchedSource {
+		log.Debug(fmt.Sprintf("removing failing scans results out of newly detected/ moved source result located in'%s', if exists", sourceResult.Target))
+		filterScaResultsIfScanFailed(nil, sourceResult)
+		filterJasResultsIfScanFailed(nil, sourceResult, results.CmdStepContextualAnalysis)
+		filterJasResultsIfScanFailed(nil, sourceResult, results.CmdStepSecrets)
+		filterJasResultsIfScanFailed(nil, sourceResult, results.CmdStepIaC)
+		filterJasResultsIfScanFailed(nil, sourceResult, results.CmdStepSast)
+	}
+	// Note: Unmatched target results (removed targets) are ignored as they don't affect PR diff, as they are targets that were removed in the PR and don't exist in source results.
+
+	if sourceResults.ViolationsStatusCode == nil || targetResults.ViolationsStatusCode == nil {
+		// If ViolationsStatusCode is nil it means we didn't perform violation check. We ensure the violation results are zeroed and return
+		sourceResults.Violations = nil
+		return
+	}
+
+	filterOutViolations(sourceResults, targetResults)
+}
+
+func filterOutViolations(sourceResults, targetResults *results.SecurityCommandResults) {
+	if sourceResults.Violations == nil {
+		return
+	}
+
+	// Violation's scan status relates to all violation scans from all targets, therefore if violation status != 0 we filter out all violations results for all scanners from all targets
+	if *sourceResults.ViolationsStatusCode != 0 || *targetResults.ViolationsStatusCode != 0 {
+		log.Debug("violation scan has failed. Removing all violations results out of source results")
+		sourceResults.Violations = nil
+		return
+	}
+
+	// If we have a failure in a specific scanner, we filter out this scanner's violation to avoid incorrect results
+	filterSpecificScannersViolationsIfScanFailed(sourceResults, sourceResults.GetStatusCodes(), targetResults.GetStatusCodes())
+}
+
+func filterSpecificScannersViolationsIfScanFailed(sourceResults *results.SecurityCommandResults, sourceStatusCodes, targetStatusCodes results.ResultsStatus) {
+	if (sourceStatusCodes.ScaScanStatusCode != nil && *sourceStatusCodes.ScaScanStatusCode != 0) ||
+		(targetStatusCodes.ScaScanStatusCode != nil && *targetStatusCodes.ScaScanStatusCode != 0) {
+		log.Debug(fmt.Sprintf(violationsFilteringErrorMessage, results.CmdStepSca))
+		sourceResults.Violations.Sca = nil
+	}
+
+	if (sourceStatusCodes.SecretsScanStatusCode != nil && *sourceStatusCodes.SecretsScanStatusCode != 0) ||
+		(targetStatusCodes.SecretsScanStatusCode != nil && *targetStatusCodes.SecretsScanStatusCode != 0) {
+		log.Debug(fmt.Sprintf(violationsFilteringErrorMessage, results.CmdStepSecrets))
+		sourceResults.Violations.Secrets = nil
+	}
+
+	if (sourceStatusCodes.IacScanStatusCode != nil && *sourceStatusCodes.IacScanStatusCode != 0) ||
+		(targetStatusCodes.IacScanStatusCode != nil && *targetStatusCodes.IacScanStatusCode != 0) {
+		log.Debug(fmt.Sprintf(violationsFilteringErrorMessage, results.CmdStepIaC))
+		sourceResults.Violations.Iac = nil
+	}
+
+	if (sourceStatusCodes.SastScanStatusCode != nil && *sourceStatusCodes.SastScanStatusCode != 0) ||
+		(targetStatusCodes.SastScanStatusCode != nil && *targetStatusCodes.SastScanStatusCode != 0) {
+		log.Debug(fmt.Sprintf(violationsFilteringErrorMessage, results.CmdStepSast))
+		sourceResults.Violations.Sast = nil
+	}
+}
+
+// Creates maps and slices of matched/unmatched targets using pointers to original objects.
+// Optimized version using lookup maps for O(n+m) complexity instead of O(n*m).
+// Returns:
+//   - matchedByLocation: map of pairs matched by physical location (Target field)
+//   - matchedByName: map of pairs matched by logical name (Name field) - fallback for location changes
+//   - unmatchedSource: slice of source-only targets (newly added targets)
+func buildTargetMappings(targetResults, sourceResults *results.SecurityCommandResults, sourceWdPrefix, targetWdPrefix string) (matchedByLocation map[string]*targetPair, matchedByName map[string]*targetPair, unmatchedSource []*results.TargetResults) {
+	matchedByLocation = make(map[string]*targetPair)
+	matchedByName = make(map[string]*targetPair)
+	unmatchedSource = []*results.TargetResults{}
+	matchedSourceTargets := datastructures.MakeSet[*results.TargetResults]()
+	matchedTargetTargets := datastructures.MakeSet[*results.TargetResults]()
+
+	targetsByLocation := make(map[string]*results.TargetResults)
+	targetsByName := make(map[string]*results.TargetResults)
+	// TODO in new SCA scanner we only get results in a single target, but since it is not yet deprecated we iterate all targets
+	for _, targetResult := range targetResults.Targets {
+		if targetResult.Target != "" {
+			targetsByLocation[trimTargetPrefix(targetResult.Target, targetWdPrefix)] = targetResult
+		}
+		if targetResult.Name != "" {
+			targetsByName[targetResult.Name] = targetResult
+		}
+	}
+
+	for _, sourceResult := range sourceResults.Targets {
+		if sourceResult.Target == "" {
+			continue
+		}
+		targetResult := targetsByLocation[trimTargetPrefix(sourceResult.Target, sourceWdPrefix)]
+		if targetResult == nil || matchedTargetTargets.Exists(targetResult) {
+			continue
+		}
+
+		matchedByLocation[sourceResult.Target] = &targetPair{
+			source: sourceResult,
+			target: targetResult,
+		}
+		matchedSourceTargets.Add(sourceResult)
+		matchedTargetTargets.Add(targetResult)
+	}
+
+	for _, sourceResult := range sourceResults.Targets {
+		if sourceResult.Name == "" || matchedSourceTargets.Exists(sourceResult) {
+			continue
+		}
+
+		targetResult := targetsByName[sourceResult.Name]
+		if targetResult == nil || matchedTargetTargets.Exists(targetResult) {
+			continue
+		}
+
+		matchedByName[sourceResult.Name] = &targetPair{
+			source: sourceResult,
+			target: targetResult,
+		}
+		matchedSourceTargets.Add(sourceResult)
+		matchedTargetTargets.Add(targetResult)
+	}
+
+	// The unmatched source targets are newly added targets
+	for _, sourceResult := range sourceResults.Targets {
+		if !matchedSourceTargets.Exists(sourceResult) {
+			unmatchedSource = append(unmatchedSource, sourceResult)
+		}
+	}
+
+	return matchedByLocation, matchedByName, unmatchedSource
+}
+
+func filterJasResultsIfScanFailed(targetResult, sourceResult *results.TargetResults, cmdStep results.SecurityCommandStep) {
+	if !isScanFailedInSourceOrTarget(sourceResult, targetResult, cmdStep) {
+		return
+	}
+	log.Debug(fmt.Sprintf(vulnerabilitiesFilteringErrorMessage, cmdStep))
+
+	switch cmdStep {
+	case results.CmdStepContextualAnalysis:
+		if sourceResult.JasResults != nil {
+			sourceResult.JasResults.ApplicabilityScanResults = nil
+		}
+	case results.CmdStepSecrets:
+		if sourceResult.JasResults != nil {
+			sourceResult.JasResults.JasVulnerabilities.SecretsScanResults = nil
+		}
+	case results.CmdStepIaC:
+		if sourceResult.JasResults != nil {
+			sourceResult.JasResults.JasVulnerabilities.IacScanResults = nil
+		}
+	case results.CmdStepSast:
+		if sourceResult.JasResults != nil {
+			sourceResult.JasResults.JasVulnerabilities.SastScanResults = nil
+		}
+	}
+}
+
+func isScanFailedInSourceOrTarget(sourceResult, targetResult *results.TargetResults, step results.SecurityCommandStep) bool {
+	if sourceResult != nil && sourceResult.ResultsStatus.IsScanFailed(step) {
+		return true
+	}
+
+	if targetResult != nil && targetResult.ResultsStatus.IsScanFailed(step) {
+		return true
+	}
+	return false
+}
+
+func filterScaResultsIfScanFailed(targetResult, sourceResult *results.TargetResults) {
+	// Filter out new Sca results
+	sourceFailed := sourceResult.ResultsStatus.IsScanFailed(results.CmdStepSca)
+	targetFailed := targetResult != nil && targetResult.ResultsStatus.IsScanFailed(results.CmdStepSca)
+
+	if sourceFailed || targetFailed {
+		var statusCode *int
+		var errorSource string
+		if sourceFailed {
+			statusCode = sourceResult.ResultsStatus.ScaScanStatusCode
+			errorSource = "source"
+		} else {
+			statusCode = targetResult.ResultsStatus.ScaScanStatusCode
+			errorSource = "target"
+		}
+		log.Debug(fmt.Sprintf("Sca scan on %s code has completed with errors (status %d). Sca vulnerability results will be removed from final report", errorSource, statusCode))
+		if sourceResult.ScaResults != nil {
+			sourceResult.ScaResults.Sbom = nil
+		}
+	}
+}
+
+func trimTargetPrefix(fullPath, prefix string) string {
+	if prefix == "" {
+		return fullPath
+	}
+	// Normalize prefix to end with path separator
+	normalizedPrefix := strings.TrimSuffix(prefix, string(os.PathSeparator)) + string(os.PathSeparator)
+
+	// Check if fullPath actually starts with normalizedPrefix
+	if !strings.HasPrefix(fullPath, normalizedPrefix) {
+		// If fullPath doesn't start with normalizedPrefix, check if it equals the prefix (without trailing /)
+		if fullPath == prefix || fullPath == strings.TrimSuffix(prefix, string(os.PathSeparator)) {
+			return "."
+		}
+		// Otherwise, return fullPath unchanged (not under this prefix)
+		return fullPath
+	}
+
+	trimmed := strings.TrimPrefix(fullPath, normalizedPrefix)
+	if trimmed == "" {
+		// Everything was trimmed, meaning fullPath == normalizedPrefix
+		return "."
+	}
+	return trimmed
+}
+
+// =======================================================================================
 
 func scanResultsToIssuesCollection(scanResults *results.SecurityCommandResults, workingDirs ...string) (issuesCollection *issues.ScansIssuesCollection, err error) {
 	simpleJsonResults, err := conversion.NewCommandResultsConvertor(conversion.ResultConvertParams{
