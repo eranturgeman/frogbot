@@ -182,7 +182,7 @@ func auditPullRequestSourceCode(repoConfig *utils.Repository, scanDetails *utils
 	//	}
 	//}
 
-	filterFailedScansIfScannersFailuresAreAllowed(scanDetails.ResultsToCompare, scanResults, repoConfig.Params.ConfigProfile.GeneralConfig.FailUponAnyScannerError, sourceBranchWd, targetBranchWd)
+	filterFailedResultsIfScannersFailuresAreAllowed(scanDetails.ResultsToCompare, scanResults, repoConfig.Params.ConfigProfile.GeneralConfig.FailUponAnyScannerError, sourceBranchWd, targetBranchWd)
 
 	issuesCollection, e := scanResultsToIssuesCollection(scanResults, workingDirs...)
 	if e != nil {
@@ -322,7 +322,7 @@ func sortTargetsByPhysicalLocation(targetResults, sourceResults *results.Securit
 // When allowPartialResults is enabled, and we are performing a diff scan (both source & target results exist),
 // we filter out a scanner results if we found any error in any of its results (non-zero status code) in either source or target results.
 // This logic prevents us from presenting incorrect results due to an incomplete scan that produced incomplete results that might affect the diff process.
-func filterFailedScansIfScannersFailuresAreAllowed(targetResults, sourceResults *results.SecurityCommandResults, failUponAnyScannerError bool, sourceWdPrefix, targetWdPrefix string) {
+func filterFailedResultsIfScannersFailuresAreAllowed(targetResults, sourceResults *results.SecurityCommandResults, failUponAnyScannerError bool, sourceWdPrefix, targetWdPrefix string) {
 	if failUponAnyScannerError {
 		return
 	}
