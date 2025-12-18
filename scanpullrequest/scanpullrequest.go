@@ -319,7 +319,7 @@ func sortTargetsByPhysicalLocation(targetResults, sourceResults *results.Securit
 */
 
 // =======================================================================================
-// When allowPartialResults is enabled, and we are performing a diff scan (both source & target results exist),
+// When failUponAnyScannerError is false, and we are performing a diff scan (both source & target results exist),
 // we filter out a scanner results if we found any error in any of its results (non-zero status code) in either source or target results.
 // This logic prevents us from presenting incorrect results due to an incomplete scan that produced incomplete results that might affect the diff process.
 func filterFailedResultsIfScannersFailuresAreAllowed(targetResults, sourceResults *results.SecurityCommandResults, failUponAnyScannerError bool, sourceWdPrefix, targetWdPrefix string) {
@@ -367,10 +367,10 @@ func filterFailedResultsIfScannersFailuresAreAllowed(targetResults, sourceResult
 		return
 	}
 
-	filterOutViolations(sourceResults, targetResults)
+	filterViolationsResults(sourceResults, targetResults)
 }
 
-func filterOutViolations(sourceResults, targetResults *results.SecurityCommandResults) {
+func filterViolationsResults(sourceResults, targetResults *results.SecurityCommandResults) {
 	if sourceResults.Violations == nil {
 		return
 	}

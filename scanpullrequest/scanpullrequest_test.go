@@ -822,31 +822,31 @@ func TestFilterScaResultsIfScanFailed(t *testing.T) {
 
 func TestFilterFailedResultsIfScannersFailuresAreAllowed(t *testing.T) {
 	tests := []struct {
-		name                string
-		targetResults       *results.SecurityCommandResults
-		sourceResults       *results.SecurityCommandResults
-		allowPartialResults bool
-		validate            func(t *testing.T, sourceResults *results.SecurityCommandResults)
+		name                    string
+		targetResults           *results.SecurityCommandResults
+		sourceResults           *results.SecurityCommandResults
+		failUponAnyScannerError bool
+		validate                func(t *testing.T, sourceResults *results.SecurityCommandResults)
 	}{
 		{
-			name:                "allowPartialResults is false - should not filter anything",
-			targetResults:       createSecurityCommandResultsForTest("test", "", false, false, false, false, false, false, 0, 0, 0, 0, 0, 0),
-			sourceResults:       createSecurityCommandResultsForTest("test", "", true, true, true, true, true, false, 1, 1, 1, 1, 1, 0),
-			allowPartialResults: false,
+			name:                    "FailUponAnyScannerError is true - should not filter anything",
+			targetResults:           createSecurityCommandResultsForTest("test", "", false, false, false, false, false, false, 0, 0, 0, 0, 0, 0),
+			sourceResults:           createSecurityCommandResultsForTest("test", "", true, true, true, true, true, false, 1, 1, 1, 1, 1, 0),
+			failUponAnyScannerError: true,
 			validate: func(t *testing.T, sourceResults *results.SecurityCommandResults) {
 				sourceTarget := sourceResults.Targets[0]
-				assert.NotNil(t, sourceTarget.ScaResults.Sbom, "SCA SBOM should NOT be filtered when allowPartialResults is false")
-				assert.NotNil(t, sourceTarget.JasResults.ApplicabilityScanResults, "Applicability scan results should NOT be filtered when allowPartialResults is false")
-				assert.NotNil(t, sourceTarget.JasResults.JasVulnerabilities.SecretsScanResults, "Secrets scan results should NOT be filtered when allowPartialResults is false")
-				assert.NotNil(t, sourceTarget.JasResults.JasVulnerabilities.IacScanResults, "IaC scan results should NOT be filtered when allowPartialResults is false")
-				assert.NotNil(t, sourceTarget.JasResults.JasVulnerabilities.SastScanResults, "SAST scan results should NOT be filtered when allowPartialResults is false")
+				assert.NotNil(t, sourceTarget.ScaResults.Sbom, "SCA SBOM should NOT be filtered when failUponAnyScannerError is true")
+				assert.NotNil(t, sourceTarget.JasResults.ApplicabilityScanResults, "Applicability scan results should NOT be filtered when failUponAnyScannerError is true")
+				assert.NotNil(t, sourceTarget.JasResults.JasVulnerabilities.SecretsScanResults, "Secrets scan results should NOT be filtered when failUponAnyScannerError is true")
+				assert.NotNil(t, sourceTarget.JasResults.JasVulnerabilities.IacScanResults, "IaC scan results should NOT be filtered when failUponAnyScannerError is true")
+				assert.NotNil(t, sourceTarget.JasResults.JasVulnerabilities.SastScanResults, "SAST scan results should NOT be filtered when failUponAnyScannerError is true")
 			},
 		},
 		{
-			name:                "targetResults is nil - should not filter anything",
-			targetResults:       nil,
-			sourceResults:       createSecurityCommandResultsForTest("test", "", true, true, true, true, true, false, 1, 1, 1, 1, 1, 0),
-			allowPartialResults: true,
+			name:                    "targetResults is nil - should not filter anything",
+			targetResults:           nil,
+			sourceResults:           createSecurityCommandResultsForTest("test", "", true, true, true, true, true, false, 1, 1, 1, 1, 1, 0),
+			failUponAnyScannerError: false,
 			validate: func(t *testing.T, sourceResults *results.SecurityCommandResults) {
 				sourceTarget := sourceResults.Targets[0]
 				assert.NotNil(t, sourceTarget.ScaResults.Sbom, "SCA SBOM should NOT be filtered when targetResults is nil")
@@ -857,10 +857,10 @@ func TestFilterFailedResultsIfScannersFailuresAreAllowed(t *testing.T) {
 			},
 		},
 		{
-			name:                "All scans succeed - should not filter anything",
-			targetResults:       createSecurityCommandResultsForTest("test-target", "test-name", true, true, true, true, true, false, 0, 0, 0, 0, 0, 0),
-			sourceResults:       createSecurityCommandResultsForTest("test-target", "test-name", true, true, true, true, true, false, 0, 0, 0, 0, 0, 0),
-			allowPartialResults: true,
+			name:                    "All scans succeed - should not filter anything",
+			targetResults:           createSecurityCommandResultsForTest("test-target", "test-name", true, true, true, true, true, false, 0, 0, 0, 0, 0, 0),
+			sourceResults:           createSecurityCommandResultsForTest("test-target", "test-name", true, true, true, true, true, false, 0, 0, 0, 0, 0, 0),
+			failUponAnyScannerError: false,
 			validate: func(t *testing.T, sourceResults *results.SecurityCommandResults) {
 				sourceTarget := sourceResults.Targets[0]
 				assert.NotNil(t, sourceTarget.ScaResults.Sbom, "SCA SBOM should NOT be removed when all scans succeed")
@@ -871,10 +871,10 @@ func TestFilterFailedResultsIfScannersFailuresAreAllowed(t *testing.T) {
 			},
 		},
 		{
-			name:                "SCA and Secrets scanners failed in target - should filter SCA and Secrets results",
-			targetResults:       createSecurityCommandResultsForTest("test-target", "", false, false, true, false, false, false, 1, 0, 1, 0, 0, 0),
-			sourceResults:       createSecurityCommandResultsForTest("test-target", "", true, false, true, true, true, false, 0, 0, 0, 0, 0, 0),
-			allowPartialResults: true,
+			name:                    "SCA and Secrets scanners failed in target - should filter SCA and Secrets results",
+			targetResults:           createSecurityCommandResultsForTest("test-target", "", false, false, true, false, false, false, 1, 0, 1, 0, 0, 0),
+			sourceResults:           createSecurityCommandResultsForTest("test-target", "", true, false, true, true, true, false, 0, 0, 0, 0, 0, 0),
+			failUponAnyScannerError: false,
 			validate: func(t *testing.T, sourceResults *results.SecurityCommandResults) {
 				sourceTarget := sourceResults.Targets[0]
 				assert.Nil(t, sourceTarget.ScaResults.Sbom, "SCA SBOM should be removed when SCA scan failed")
@@ -884,10 +884,10 @@ func TestFilterFailedResultsIfScannersFailuresAreAllowed(t *testing.T) {
 			},
 		},
 		{
-			name:                "New target in source (unmatched) with failures - should filter based on source failures only",
-			targetResults:       createSecurityCommandResultsForTest("old-target", "", false, false, false, false, false, false, 0, 0, 0, 0, 0, 0),
-			sourceResults:       createSecurityCommandResultsForTest("new-target", "", true, false, true, false, false, false, 1, 0, 1, 0, 0, 0),
-			allowPartialResults: true,
+			name:                    "New target in source (unmatched) with failures - should filter based on source failures only",
+			targetResults:           createSecurityCommandResultsForTest("old-target", "", false, false, false, false, false, false, 0, 0, 0, 0, 0, 0),
+			sourceResults:           createSecurityCommandResultsForTest("new-target", "", true, false, true, false, false, false, 1, 0, 1, 0, 0, 0),
+			failUponAnyScannerError: false,
 			validate: func(t *testing.T, sourceResults *results.SecurityCommandResults) {
 				sourceTarget := sourceResults.Targets[0]
 				assert.Nil(t, sourceTarget.ScaResults.Sbom, "SCA SBOM should be removed when source SCA scan failed")
@@ -895,10 +895,10 @@ func TestFilterFailedResultsIfScannersFailuresAreAllowed(t *testing.T) {
 			},
 		},
 		{
-			name:                "Target matched by name (location changed)",
-			targetResults:       createSecurityCommandResultsForTest("old-location", "same-name", false, false, false, true, false, false, 0, 0, 0, 1, 0, 0),
-			sourceResults:       createSecurityCommandResultsForTest("new-location", "same-name", false, false, false, true, false, false, 0, 0, 0, 0, 0, 0),
-			allowPartialResults: true,
+			name:                    "Target matched by name (location changed)",
+			targetResults:           createSecurityCommandResultsForTest("old-location", "same-name", false, false, false, true, false, false, 0, 0, 0, 1, 0, 0),
+			sourceResults:           createSecurityCommandResultsForTest("new-location", "same-name", false, false, false, true, false, false, 0, 0, 0, 0, 0, 0),
+			failUponAnyScannerError: false,
 			validate: func(t *testing.T, sourceResults *results.SecurityCommandResults) {
 				sourceTarget := sourceResults.Targets[0]
 				assert.Nil(t, sourceTarget.JasResults.JasVulnerabilities.IacScanResults, "IaC scan results should be removed when target IaC scan failed (matched by name)")
@@ -916,25 +916,25 @@ func TestFilterFailedResultsIfScannersFailuresAreAllowed(t *testing.T) {
 				result.ViolationsStatusCode = nil
 				return result
 			}(),
-			allowPartialResults: true,
+			failUponAnyScannerError: false,
 			validate: func(t *testing.T, sourceResults *results.SecurityCommandResults) {
 				assert.Nil(t, sourceResults.Violations, "Violations should be nil when ViolationsStatusCode is nil")
 			},
 		},
 		{
-			name:                "Violations scan failed - should remove all violations",
-			targetResults:       createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, 0, 0, 0, 0, 0, 1),
-			sourceResults:       createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, true, 0, 0, 0, 0, 0, 0),
-			allowPartialResults: true,
+			name:                    "Violations scan failed - should remove all violations",
+			targetResults:           createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, 0, 0, 0, 0, 0, 1),
+			sourceResults:           createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, true, 0, 0, 0, 0, 0, 0),
+			failUponAnyScannerError: false,
 			validate: func(t *testing.T, sourceResults *results.SecurityCommandResults) {
 				assert.Nil(t, sourceResults.Violations, "All violations should be removed when violations scan failed")
 			},
 		},
 		{
-			name:                "Specific scanner failed but violations scan succeeded - should filter only that scanner's violations",
-			targetResults:       createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, 1, 0, 0, 0, 0, 0),
-			sourceResults:       createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, true, 0, 0, 0, 0, 0, 0),
-			allowPartialResults: true,
+			name:                    "Specific scanner failed but violations scan succeeded - should filter only that scanner's violations",
+			targetResults:           createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, 1, 0, 0, 0, 0, 0),
+			sourceResults:           createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, true, 0, 0, 0, 0, 0, 0),
+			failUponAnyScannerError: false,
 			validate: func(t *testing.T, sourceResults *results.SecurityCommandResults) {
 				assert.Nil(t, sourceResults.Violations.Sca, "SCA violations should be removed when SCA scan failed")
 				assert.NotNil(t, sourceResults.Violations.Secrets, "Secrets violations should NOT be removed")
@@ -946,7 +946,7 @@ func TestFilterFailedResultsIfScannersFailuresAreAllowed(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			filterFailedResultsIfScannersFailuresAreAllowed(test.targetResults, test.sourceResults, test.allowPartialResults, "", "")
+			filterFailedResultsIfScannersFailuresAreAllowed(test.targetResults, test.sourceResults, test.failUponAnyScannerError, "", "")
 			test.validate(t, test.sourceResults)
 		})
 	}
@@ -1127,7 +1127,7 @@ func TestBuildTargetMappings(t *testing.T) {
 	}
 }
 
-func TestFilterOutViolations(t *testing.T) {
+func TestFilterViolationsResults(t *testing.T) {
 	tests := []struct {
 		name                      string
 		sourceResults             *results.SecurityCommandResults
@@ -1199,7 +1199,7 @@ func TestFilterOutViolations(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			filterOutViolations(test.sourceResults, test.targetResults)
+			filterViolationsResults(test.sourceResults, test.targetResults)
 
 			if test.shouldRemoveAllViolations {
 				assert.Nil(t, test.sourceResults.Violations, "All violations should be removed when violations scan failed")
