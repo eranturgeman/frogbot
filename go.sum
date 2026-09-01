@@ -61,10 +61,6 @@ github.com/elazarl/goproxy v1.7.2 h1:Y2o6urb7Eule09PjlhQRGNsqRfPmYI3KKQLFpCAV3+o
 github.com/elazarl/goproxy v1.7.2/go.mod h1:82vkLNir0ALaW14Rc399OTTjyNREgmdL2cVoIbS6XaE=
 github.com/emirpasic/gods v1.18.1 h1:FXtiHYKDGKCW2KzwZKx0iC0PQmdlorYgdFG9jPXJ1Bc=
 github.com/emirpasic/gods v1.18.1/go.mod h1:8tpGGwCnJ5H4r6BWwaV6OrWmMoPhUl5jm/FMNAnJvWQ=
-github.com/eranturgeman/jfrog-cli-security v0.0.0-20260827115126-1edd4b8c47b9 h1:OPm15mhaprE3pACBQlTcK6bN9RBLR53ybAZKeAcHHMk=
-github.com/eranturgeman/jfrog-cli-security v0.0.0-20260827115126-1edd4b8c47b9/go.mod h1:eXC2Bt2/rZJweiE8W06K6kkhbI8W+xe6wmNZn9ljZcQ=
-github.com/eranturgeman/jfrog-client-go v0.0.0-20260827114852-ade248ee9a60 h1:hJzSpeNJn8MFmkGnvw7ic34sM8IyGckg1bUqhybOU9c=
-github.com/eranturgeman/jfrog-client-go v0.0.0-20260827114852-ade248ee9a60/go.mod h1:7B7eMRKuMhZ0rOdMItbJVpWjRUe1L//J3Jq+PgjiNxI=
 github.com/fatih/color v1.13.0/go.mod h1:kLAiJbzzSOZDVNGyDpeOxJ47H46qBXwg5ILebYFFOfk=
 github.com/fatih/color v1.16.0 h1:zmkK9Ngbjj+K0yRhTVONQh1p/HknKYSlNT+vZCzyokM=
 github.com/fatih/color v1.16.0/go.mod h1:fL2Sau1YI5c0pdGEVCbKQbLXB6edEj1ZgiY4NijnWvE=
@@ -158,6 +154,10 @@ github.com/jfrog/jfrog-cli-artifactory v0.8.1-0.20260819070735-a590327f2489 h1:F
 github.com/jfrog/jfrog-cli-artifactory v0.8.1-0.20260819070735-a590327f2489/go.mod h1:1ACZmkzA38Si48i9f052M4BDLfti02lHUfL/f853Ny0=
 github.com/jfrog/jfrog-cli-core/v2 v2.60.1-0.20260814125750-77deb9f6259c h1:H77lybOSbPe2T70+l0Q9zy7eXWLbLj4ph2R2Svahf5A=
 github.com/jfrog/jfrog-cli-core/v2 v2.60.1-0.20260814125750-77deb9f6259c/go.mod h1:gf7aUg/G9JyltCNhwMD5RVEsFzUCKPWKXRcTXSqMYBk=
+github.com/jfrog/jfrog-cli-security v1.36.0 h1:VvjJJf+BkcYxZ8SSrYAAXpVT/vg/i/9qvvNV5LtO8BU=
+github.com/jfrog/jfrog-cli-security v1.36.0/go.mod h1:T1LXsW+LORDBJbZGiEPxdWeOn+zzaOGwoBFQwvEL37A=
+github.com/jfrog/jfrog-client-go v1.55.1-0.20260813100550-0f2168d02558 h1:/4ayHXxzgyZ9f66EqImCyZr2SKUpygU1P36sDVAlskM=
+github.com/jfrog/jfrog-client-go v1.55.1-0.20260813100550-0f2168d02558/go.mod h1:7B7eMRKuMhZ0rOdMItbJVpWjRUe1L//J3Jq+PgjiNxI=
 github.com/jhump/protoreflect v1.15.1 h1:HUMERORf3I3ZdX05WaQ6MIpd/NJ434hTp5YiKgfCL6c=
 github.com/jhump/protoreflect v1.15.1/go.mod h1:jD/2GMKKE6OqX8qTjhADU1e6DShO+gavG9e0Q693nKo=
 github.com/kevinburke/ssh_config v1.6.0 h1:J1FBfmuVosPHf5GRdltRLhPJtJpTlMdKTBjRgTaQBFY=

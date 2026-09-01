@@ -110,7 +110,7 @@ func (g *Git) setDefaultsIfNeeded(gitParamsFromEnv *Git, commandName string) (er
 			return errors.New("no Pull Request ID has been provided. Please configure it by using the `JF_GIT_PULL_REQUEST_ID` environment variable")
 		}
 	}
-	if commandName == ScanRepository {
+	if commandName == ScanRepository || commandName == AutoPr {
 		if len(gitParamsFromEnv.Branches) == 0 {
 			return errors.New("no branches were provided. Please set your branches using the `JF_GIT_BASE_BRANCH` environment variable")
 		}
@@ -225,10 +225,15 @@ func extractJFrogCredentialsFromEnvs() (*coreconfig.ServerDetails, error) {
 		server.XrayUrl = platformUrl + "/xray/"
 		server.ArtifactoryUrl = platformUrl + "/artifactory/"
 	}
+	user := getTrimmedEnv(JFrogUserEnv)
+	password := getTrimmedEnv(JFrogPasswordEnv)
 	if accessToken := getTrimmedEnv(JFrogTokenEnv); accessToken != "" {
 		server.AccessToken = accessToken
+	} else if user != "" && password != "" {
+		server.User = user
+		server.Password = password
 	} else {
-		return nil, fmt.Errorf("%s environment variable is missing", JFrogTokenEnv)
+		return nil, fmt.Errorf("%s and %s or %s environment variables are missing", JFrogUserEnv, JFrogPasswordEnv, JFrogTokenEnv)
 	}
 	return &server, nil
 }
