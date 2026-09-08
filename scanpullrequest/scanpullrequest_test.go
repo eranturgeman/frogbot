@@ -5,9 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/CycloneDX/cyclonedx-go"
-	"github.com/jfrog/jfrog-cli-security/utils/formats/violationutils"
-	services2 "github.com/jfrog/jfrog-client-go/xsc/services"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,10 +13,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/CycloneDX/cyclonedx-go"
+	"github.com/jfrog/jfrog-cli-security/utils/formats/violationutils"
+	services2 "github.com/jfrog/jfrog-client-go/xsc/services"
+
 	"github.com/golang/mock/gomock"
 	securityutils "github.com/jfrog/jfrog-cli-security/utils"
 	"github.com/jfrog/jfrog-cli-security/utils/formats/sarifutils"
 	"github.com/jfrog/jfrog-cli-security/utils/severityutils"
+	"github.com/jfrog/jfrog-cli-security/utils/techutils"
 	"github.com/jfrog/jfrog-cli-security/utils/xsc"
 	"github.com/jfrog/jfrog-client-go/xray/services"
 	"github.com/owenrumney/go-sarif/v3/pkg/report/v210/sarif"
@@ -69,12 +71,262 @@ func CreateMockVcsClient(t *testing.T) *testdata.MockVcsClient {
 	return testdata.NewMockVcsClient(gomock.NewController(t))
 }
 
+var gitParams = &utils.Repository{
+	OutputWriter: &outputwriter.SimplifiedOutput{},
+	Params: utils.Params{
+		Git: utils.Git{
+			RepoOwner: "repo-owner",
+			Branches:  []string{"master"},
+			RepoName:  "repo-name",
+		},
+	},
+}
+
+func TestRiskyTechEnvironmentGuard(t *testing.T) {
+	expectEnvironmentConfigured := func(client *testdata.MockVcsClient) {
+		client.EXPECT().GetRepositoryInfo(context.Background(), gitParams.RepoOwner, gitParams.RepoName).Return(vcsclient.RepositoryInfo{}, nil)
+		client.EXPECT().GetRepositoryEnvironmentInfo(context.Background(), gitParams.RepoOwner, gitParams.RepoName, "frogbot").Return(vcsclient.RepositoryEnvironmentInfo{Reviewers: []string{"froggy"}}, nil)
+	}
+
+	tests := []struct {
+		testName  string
+		detected  []techutils.Technology
+		setupMock func(client *testdata.MockVcsClient)
+	}{
+		{
+			testName: "no maven or gradle detected - no-op",
+			detected: []techutils.Technology{techutils.Npm, techutils.Pip},
+		},
+		{
+			testName: "no technologies detected - no-op",
+			detected: nil,
+		},
+		{
+			testName:  "maven detected - delegates to environment verification",
+			detected:  []techutils.Technology{techutils.Maven},
+			setupMock: expectEnvironmentConfigured,
+		},
+		{
+			testName:  "gradle detected - delegates to environment verification",
+			detected:  []techutils.Technology{techutils.Gradle},
+			setupMock: expectEnvironmentConfigured,
+		},
+		{
+			testName:  "maven alongside other technologies - delegates to environment verification",
+			detected:  []techutils.Technology{techutils.Npm, techutils.Maven},
+			setupMock: expectEnvironmentConfigured,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.testName, func(t *testing.T) {
+			// When setupMock is nil, no .EXPECT() is set on the mock: any VCS call fails the test,
+			// proving the guard is a pure no-op for non-Maven/Gradle technologies.
+			client := CreateMockVcsClient(t)
+			if test.setupMock != nil {
+				test.setupMock(client)
+				assert.NoError(t, os.Setenv(utils.GitHubActionsEnv, "true"))
+				assert.NoError(t, os.Unsetenv(utils.GitHubWorkflowRefEnv))
+			}
+
+			guard := blockRiskyTechsWithoutEnvironmentGuard(client, gitParams)
+			assert.NoError(t, guard(test.detected))
+		})
+	}
+}
+
+func TestVerifyGitHubFrogbotEnvironment(t *testing.T) {
+	tests := []struct {
+		testName        string
+		repoConfig      *utils.Repository
+		setupMock       func(client *testdata.MockVcsClient)
+		wantErrContains string
+	}{
+		{
+			testName:   "environment configured with reviewers",
+			repoConfig: gitParams,
+			setupMock: func(client *testdata.MockVcsClient) {
+				client.EXPECT().GetRepositoryInfo(context.Background(), gitParams.RepoOwner, gitParams.RepoName).Return(vcsclient.RepositoryInfo{}, nil)
+				client.EXPECT().GetRepositoryEnvironmentInfo(context.Background(), gitParams.RepoOwner, gitParams.RepoName, "frogbot").Return(vcsclient.RepositoryEnvironmentInfo{Reviewers: []string{"froggy"}}, nil)
+			},
+		},
+		{
+			testName:   "environment does not exist",
+			repoConfig: gitParams,
+			setupMock: func(client *testdata.MockVcsClient) {
+				client.EXPECT().GetRepositoryInfo(context.Background(), gitParams.RepoOwner, gitParams.RepoName).Return(vcsclient.RepositoryInfo{}, nil)
+				client.EXPECT().GetRepositoryEnvironmentInfo(context.Background(), gitParams.RepoOwner, gitParams.RepoName, "frogbot").Return(vcsclient.RepositoryEnvironmentInfo{}, errors.New("404"))
+			},
+			wantErrContains: noGitHubEnvErr,
+		},
+		{
+			testName:   "environment has no reviewers",
+			repoConfig: gitParams,
+			setupMock: func(client *testdata.MockVcsClient) {
+				client.EXPECT().GetRepositoryInfo(context.Background(), gitParams.RepoOwner, gitParams.RepoName).Return(vcsclient.RepositoryInfo{}, nil)
+				client.EXPECT().GetRepositoryEnvironmentInfo(context.Background(), gitParams.RepoOwner, gitParams.RepoName, "frogbot").Return(vcsclient.RepositoryEnvironmentInfo{}, nil)
+			},
+			wantErrContains: noGitHubEnvReviewersErr,
+		},
+		{
+			testName: "on-prem GitHub is skipped",
+			repoConfig: &utils.Repository{
+				Params: utils.Params{Git: utils.Git{VcsInfo: vcsclient.VcsInfo{APIEndpoint: "https://acme.vcs.io"}}},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.testName, func(t *testing.T) {
+			var client vcsclient.VcsClient
+			if test.setupMock != nil {
+				mockClient := CreateMockVcsClient(t)
+				test.setupMock(mockClient)
+				client = mockClient
+			} else {
+				client = &vcsclient.GitHubClient{}
+			}
+			assert.NoError(t, os.Setenv(utils.GitHubActionsEnv, "true"))
+			// Unset GITHUB_WORKFLOW_REF to avoid triggering the workflow file check
+			assert.NoError(t, os.Unsetenv(utils.GitHubWorkflowRefEnv))
+
+			err := verifyGitHubFrogbotEnvironment(client, test.repoConfig)
+			if test.wantErrContains != "" {
+				assert.ErrorContains(t, err, test.wantErrContains)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestVerifyWorkflowContainsFrogbotEnvironment(t *testing.T) {
+	workflowRef := "jfrog/frogbot/.github/workflows/frogbot.yml@refs/heads/main"
+
+	tests := []struct {
+		testName        string
+		workflowRefEnv  string
+		setupMock       func(client *testdata.MockVcsClient)
+		wantErrContains string
+	}{
+		{
+			testName:       "environment field present",
+			workflowRefEnv: workflowRef,
+			setupMock: func(client *testdata.MockVcsClient) {
+				client.EXPECT().DownloadFileFromRepo(context.Background(), "jfrog", "frogbot", "main", ".github/workflows/frogbot.yml").
+					Return([]byte("jobs:\n  scan:\n    environment: frogbot\n"), 200, nil)
+			},
+		},
+		{
+			testName:       "environment field missing",
+			workflowRefEnv: workflowRef,
+			setupMock: func(client *testdata.MockVcsClient) {
+				client.EXPECT().DownloadFileFromRepo(context.Background(), "jfrog", "frogbot", "main", ".github/workflows/frogbot.yml").
+					Return([]byte("jobs:\n  scan:\n    runs-on: ubuntu-latest\n"), 200, nil)
+			},
+			wantErrContains: noGitHubEnvInWorkflowErr,
+		},
+		{
+			testName:       "environment field with a different name is rejected, not treated as a prefix match",
+			workflowRefEnv: workflowRef,
+			setupMock: func(client *testdata.MockVcsClient) {
+				client.EXPECT().DownloadFileFromRepo(context.Background(), "jfrog", "frogbot", "main", ".github/workflows/frogbot.yml").
+					Return([]byte("jobs:\n  scan:\n    environment: frogbot-staging\n"), 200, nil)
+			},
+			wantErrContains: noGitHubEnvInWorkflowErr,
+		},
+		{
+			testName:       "environment field double-quoted",
+			workflowRefEnv: workflowRef,
+			setupMock: func(client *testdata.MockVcsClient) {
+				client.EXPECT().DownloadFileFromRepo(context.Background(), "jfrog", "frogbot", "main", ".github/workflows/frogbot.yml").
+					Return([]byte(`jobs:
+  scan:
+    environment: "frogbot"
+`), 200, nil)
+			},
+		},
+		{
+			testName:       "environment field single-quoted",
+			workflowRefEnv: workflowRef,
+			setupMock: func(client *testdata.MockVcsClient) {
+				client.EXPECT().DownloadFileFromRepo(context.Background(), "jfrog", "frogbot", "main", ".github/workflows/frogbot.yml").
+					Return([]byte("jobs:\n  scan:\n    environment: 'frogbot'\n"), 200, nil)
+			},
+		},
+		{
+			testName:       "environment field with trailing comment",
+			workflowRefEnv: workflowRef,
+			setupMock: func(client *testdata.MockVcsClient) {
+				client.EXPECT().DownloadFileFromRepo(context.Background(), "jfrog", "frogbot", "main", ".github/workflows/frogbot.yml").
+					Return([]byte("jobs:\n  scan:\n    environment: frogbot # requires approval\n"), 200, nil)
+			},
+		},
+		{
+			testName:       "environment field in object form with name on the next line",
+			workflowRefEnv: workflowRef,
+			setupMock: func(client *testdata.MockVcsClient) {
+				client.EXPECT().DownloadFileFromRepo(context.Background(), "jfrog", "frogbot", "main", ".github/workflows/frogbot.yml").
+					Return([]byte("jobs:\n  scan:\n    environment:\n      name: frogbot\n"), 200, nil)
+			},
+		},
+		{
+			testName:       "environment field in object form with quoted name on the next line",
+			workflowRefEnv: workflowRef,
+			setupMock: func(client *testdata.MockVcsClient) {
+				client.EXPECT().DownloadFileFromRepo(context.Background(), "jfrog", "frogbot", "main", ".github/workflows/frogbot.yml").
+					Return([]byte(`jobs:
+  scan:
+    environment:
+      name: "frogbot"
+      url: https://internal-dashboard.example.com
+`), 200, nil)
+			},
+		},
+		{
+			testName:       "workflow ref not set",
+			workflowRefEnv: "",
+		},
+		{
+			testName:        "workflow ref missing '@' separator - fails closed",
+			workflowRefEnv:  "jfrog/frogbot/.github/workflows/frogbot.yml",
+			wantErrContains: "failed verifying environment in workflow file",
+		},
+		{
+			testName:        "workflow ref missing owner/repo/path segments - fails closed",
+			workflowRefEnv:  "frogbot@refs/heads/main",
+			wantErrContains: "failed verifying environment in workflow file",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.testName, func(t *testing.T) {
+			// When setupMock is nil, no .EXPECT() is set on the mock: any VCS call fails the test,
+			// proving these ref formats are rejected before any file is fetched.
+			client := CreateMockVcsClient(t)
+			if test.setupMock != nil {
+				test.setupMock(client)
+			}
+			if test.workflowRefEnv == "" {
+				assert.NoError(t, os.Unsetenv(utils.GitHubWorkflowRefEnv))
+			} else {
+				assert.NoError(t, os.Setenv(utils.GitHubWorkflowRefEnv, test.workflowRefEnv))
+			}
+
+			err := verifyWorkflowContainsFrogbotEnvironment(client)
+			if test.wantErrContains != "" {
+				assert.ErrorContains(t, err, test.wantErrContains)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestScanResultsToIssuesCollection(t *testing.T) {
 	auditResults := &results.SecurityCommandResults{ResultsMetaData: results.ResultsMetaData{Entitlements: results.Entitlements{Jas: true}, ResultContext: results.ResultContext{IncludeVulnerabilities: true}}, Targets: []*results.TargetResults{{
 		ResultsStatus: results.ResultsStatus{
 			ScaScanStatusCode:            securityutils.NewIntPtr(0),
 			ContextualAnalysisStatusCode: securityutils.NewIntPtr(0),
 			IacScanStatusCode:            securityutils.NewIntPtr(0),
+			ServicesScanStatusCode:       securityutils.NewIntPtr(0),
 			SecretsScanStatusCode:        securityutils.NewIntPtr(0),
 			SastScanStatusCode:           securityutils.NewIntPtr(0),
 		},
@@ -104,6 +356,13 @@ func TestScanResultsToIssuesCollection(t *testing.T) {
 					sarifutils.CreateRunWithDummyResults(
 						sarifutils.CreateResultWithLocations("Missing auto upgrade was detected", "rule", severityutils.SeverityToSarifSeverityLevel(severityutils.High).String(),
 							sarifutils.CreateLocation("file1", 1, 10, 2, 11, "aws-violation"),
+						),
+					),
+				},
+				ServicesScanResults: []*sarif.Run{
+					sarifutils.CreateRunWithDummyResults(
+						sarifutils.CreateResultWithLocations("Exposed service endpoint detected", "rule", severityutils.SeverityToSarifSeverityLevel(severityutils.Medium).String(),
+							sarifutils.CreateLocation("service.yaml", 1, 10, 2, 11, "services-snippet"),
 						),
 					),
 				},
@@ -166,6 +425,27 @@ func TestScanResultsToIssuesCollection(t *testing.T) {
 				},
 			},
 		},
+		ServicesVulnerabilities: []formats.SourceCodeRow{
+			{
+				SeverityDetails: formats.SeverityDetails{
+					Severity:         "Medium",
+					SeverityNumValue: 26,
+				},
+				ScannerInfo: formats.ScannerInfo{
+					ScannerDescription: "rule-msg",
+					RuleId:             "rule",
+				},
+				Finding: "Exposed service endpoint detected",
+				Location: formats.Location{
+					File:        "service.yaml",
+					StartLine:   1,
+					StartColumn: 10,
+					EndLine:     2,
+					EndColumn:   11,
+					Snippet:     "services-snippet",
+				},
+			},
+		},
 		SecretsVulnerabilities: []formats.SourceCodeRow{
 			{
 				SeverityDetails: formats.SeverityDetails{
@@ -215,6 +495,7 @@ func TestScanResultsToIssuesCollection(t *testing.T) {
 	if assert.NoError(t, err) {
 		assert.ElementsMatch(t, expectedOutput.ScaVulnerabilities, issuesRows.ScaVulnerabilities)
 		assert.ElementsMatch(t, expectedOutput.IacVulnerabilities, issuesRows.IacVulnerabilities)
+		assert.ElementsMatch(t, expectedOutput.ServicesVulnerabilities, issuesRows.ServicesVulnerabilities)
 		assert.ElementsMatch(t, expectedOutput.SecretsVulnerabilities, issuesRows.SecretsVulnerabilities)
 		assert.ElementsMatch(t, expectedOutput.SastVulnerabilities, issuesRows.SastVulnerabilities)
 		assert.ElementsMatch(t, expectedOutput.LicensesViolations, issuesRows.LicensesViolations)
@@ -585,6 +866,31 @@ func TestFilterJasResultsIfScanFailed(t *testing.T) {
 			hasFailure: true,
 		},
 		{
+			name:    "Services scanner failed - should remove Services vulnerabilities",
+			cmdStep: results.CmdStepServices,
+			targetResult: &results.TargetResults{
+				JasResults: &results.JasScansResults{
+					JasVulnerabilities: results.JasScanResults{
+						ServicesScanResults: []*sarif.Run{},
+					},
+				},
+				ResultsStatus: results.ResultsStatus{
+					ServicesScanStatusCode: intPtr(0),
+				},
+			},
+			sourceResult: &results.TargetResults{
+				JasResults: &results.JasScansResults{
+					JasVulnerabilities: results.JasScanResults{
+						ServicesScanResults: []*sarif.Run{},
+					},
+				},
+				ResultsStatus: results.ResultsStatus{
+					ServicesScanStatusCode: intPtr(1),
+				},
+			},
+			hasFailure: true,
+		},
+		{
 			name:    "SAST scanner failed - should remove SAST vulnerabilities",
 			cmdStep: results.CmdStepSast,
 			targetResult: &results.TargetResults{
@@ -699,6 +1005,8 @@ func TestFilterJasResultsIfScanFailed(t *testing.T) {
 					assert.Nil(t, test.sourceResult.JasResults.JasVulnerabilities.SecretsScanResults, "Secrets vulnerability scan results should be removed when scan failed")
 				case results.CmdStepIaC:
 					assert.Nil(t, test.sourceResult.JasResults.JasVulnerabilities.IacScanResults, "IaC vulnerability scan results should be removed when scan failed")
+				case results.CmdStepServices:
+					assert.Nil(t, test.sourceResult.JasResults.JasVulnerabilities.ServicesScanResults, "Services vulnerability scan results should be removed when scan failed")
 				case results.CmdStepSast:
 					assert.Nil(t, test.sourceResult.JasResults.JasVulnerabilities.SastScanResults, "SAST vulnerability scan results should be removed when scan failed")
 				}
@@ -833,8 +1141,8 @@ func TestFilterFailedResultsIfScannersFailuresAreAllowed(t *testing.T) {
 	}{
 		{
 			name:                    "FailUponAnyScannerError is true - should not filter anything",
-			targetResults:           createSecurityCommandResultsForTest("test", "", false, false, false, false, false, false, 0, 0, 0, 0, 0, 0),
-			sourceResults:           createSecurityCommandResultsForTest("test", "", true, true, true, true, true, false, 1, 1, 1, 1, 1, 0),
+			targetResults:           createSecurityCommandResultsForTest("test", "", false, false, false, false, false, false, false, 0, 0, 0, 0, 0, 0, 0),
+			sourceResults:           createSecurityCommandResultsForTest("test", "", true, true, true, true, true, true, false, 1, 1, 1, 1, 1, 1, 0),
 			failUponAnyScannerError: true,
 			validate: func(t *testing.T, sourceResults *results.SecurityCommandResults) {
 				sourceTarget := sourceResults.Targets[0]
@@ -843,12 +1151,13 @@ func TestFilterFailedResultsIfScannersFailuresAreAllowed(t *testing.T) {
 				assert.NotNil(t, sourceTarget.JasResults.JasVulnerabilities.SecretsScanResults, "Secrets scan results should NOT be filtered when failUponAnyScannerError is true")
 				assert.NotNil(t, sourceTarget.JasResults.JasVulnerabilities.IacScanResults, "IaC scan results should NOT be filtered when failUponAnyScannerError is true")
 				assert.NotNil(t, sourceTarget.JasResults.JasVulnerabilities.SastScanResults, "SAST scan results should NOT be filtered when failUponAnyScannerError is true")
+				assert.NotNil(t, sourceTarget.JasResults.JasVulnerabilities.ServicesScanResults, "Services scan results should NOT be filtered when failUponAnyScannerError is true")
 			},
 		},
 		{
 			name:                    "targetResults is nil - should not filter anything",
 			targetResults:           nil,
-			sourceResults:           createSecurityCommandResultsForTest("test", "", true, true, true, true, true, false, 1, 1, 1, 1, 1, 0),
+			sourceResults:           createSecurityCommandResultsForTest("test", "", true, true, true, true, true, true, false, 1, 1, 1, 1, 1, 1, 0),
 			failUponAnyScannerError: false,
 			validate: func(t *testing.T, sourceResults *results.SecurityCommandResults) {
 				sourceTarget := sourceResults.Targets[0]
@@ -857,12 +1166,13 @@ func TestFilterFailedResultsIfScannersFailuresAreAllowed(t *testing.T) {
 				assert.NotNil(t, sourceTarget.JasResults.JasVulnerabilities.SecretsScanResults, "Secrets scan results should NOT be filtered when targetResults is nil")
 				assert.NotNil(t, sourceTarget.JasResults.JasVulnerabilities.IacScanResults, "IaC scan results should NOT be filtered when targetResults is nil")
 				assert.NotNil(t, sourceTarget.JasResults.JasVulnerabilities.SastScanResults, "SAST scan results should NOT be filtered when targetResults is nil")
+				assert.NotNil(t, sourceTarget.JasResults.JasVulnerabilities.ServicesScanResults, "Services scan results should NOT be filtered when targetResults is nil")
 			},
 		},
 		{
 			name:                    "All scans succeed - should not filter anything",
-			targetResults:           createSecurityCommandResultsForTest("test-target", "test-name", true, true, true, true, true, false, 0, 0, 0, 0, 0, 0),
-			sourceResults:           createSecurityCommandResultsForTest("test-target", "test-name", true, true, true, true, true, false, 0, 0, 0, 0, 0, 0),
+			targetResults:           createSecurityCommandResultsForTest("test-target", "test-name", true, true, true, true, true, true, false, 0, 0, 0, 0, 0, 0, 0),
+			sourceResults:           createSecurityCommandResultsForTest("test-target", "test-name", true, true, true, true, true, true, false, 0, 0, 0, 0, 0, 0, 0),
 			failUponAnyScannerError: false,
 			validate: func(t *testing.T, sourceResults *results.SecurityCommandResults) {
 				sourceTarget := sourceResults.Targets[0]
@@ -871,12 +1181,13 @@ func TestFilterFailedResultsIfScannersFailuresAreAllowed(t *testing.T) {
 				assert.NotNil(t, sourceTarget.JasResults.JasVulnerabilities.SecretsScanResults, "Secrets scan results should NOT be removed")
 				assert.NotNil(t, sourceTarget.JasResults.JasVulnerabilities.IacScanResults, "IaC scan results should NOT be removed")
 				assert.NotNil(t, sourceTarget.JasResults.JasVulnerabilities.SastScanResults, "SAST scan results should NOT be removed")
+				assert.NotNil(t, sourceTarget.JasResults.JasVulnerabilities.ServicesScanResults, "Services scan results should NOT be removed")
 			},
 		},
 		{
 			name:                    "SCA and Secrets scanners failed in target - should filter SCA and Secrets results",
-			targetResults:           createSecurityCommandResultsForTest("test-target", "", false, false, true, false, false, false, 1, 0, 1, 0, 0, 0),
-			sourceResults:           createSecurityCommandResultsForTest("test-target", "", true, false, true, true, true, false, 0, 0, 0, 0, 0, 0),
+			targetResults:           createSecurityCommandResultsForTest("test-target", "", false, false, true, false, false, false, false, 1, 0, 1, 0, 0, 0, 0),
+			sourceResults:           createSecurityCommandResultsForTest("test-target", "", true, false, true, true, true, true, false, 0, 0, 0, 0, 0, 0, 0),
 			failUponAnyScannerError: false,
 			validate: func(t *testing.T, sourceResults *results.SecurityCommandResults) {
 				sourceTarget := sourceResults.Targets[0]
@@ -884,12 +1195,13 @@ func TestFilterFailedResultsIfScannersFailuresAreAllowed(t *testing.T) {
 				assert.Nil(t, sourceTarget.JasResults.JasVulnerabilities.SecretsScanResults, "Secrets scan results should be removed when Secrets scan failed")
 				assert.NotNil(t, sourceTarget.JasResults.JasVulnerabilities.IacScanResults, "IaC scan results should NOT be removed")
 				assert.NotNil(t, sourceTarget.JasResults.JasVulnerabilities.SastScanResults, "SAST scan results should NOT be removed")
+				assert.NotNil(t, sourceTarget.JasResults.JasVulnerabilities.ServicesScanResults, "Services scan results should NOT be removed")
 			},
 		},
 		{
 			name:                    "New target in source (unmatched) with failures - should filter based on source failures only",
-			targetResults:           createSecurityCommandResultsForTest("old-target", "", false, false, false, false, false, false, 0, 0, 0, 0, 0, 0),
-			sourceResults:           createSecurityCommandResultsForTest("new-target", "", true, false, true, false, false, false, 1, 0, 1, 0, 0, 0),
+			targetResults:           createSecurityCommandResultsForTest("old-target", "", false, false, false, false, false, false, false, 0, 0, 0, 0, 0, 0, 0),
+			sourceResults:           createSecurityCommandResultsForTest("new-target", "", true, false, true, false, false, false, false, 1, 0, 1, 0, 0, 0, 0),
 			failUponAnyScannerError: false,
 			validate: func(t *testing.T, sourceResults *results.SecurityCommandResults) {
 				sourceTarget := sourceResults.Targets[0]
@@ -899,8 +1211,8 @@ func TestFilterFailedResultsIfScannersFailuresAreAllowed(t *testing.T) {
 		},
 		{
 			name:                    "Target matched by name (location changed)",
-			targetResults:           createSecurityCommandResultsForTest("old-location", "same-name", false, false, false, true, false, false, 0, 0, 0, 1, 0, 0),
-			sourceResults:           createSecurityCommandResultsForTest("new-location", "same-name", false, false, false, true, false, false, 0, 0, 0, 0, 0, 0),
+			targetResults:           createSecurityCommandResultsForTest("old-location", "same-name", false, false, false, true, false, false, false, 0, 0, 0, 1, 0, 0, 0),
+			sourceResults:           createSecurityCommandResultsForTest("new-location", "same-name", false, false, false, true, false, false, false, 0, 0, 0, 0, 0, 0, 0),
 			failUponAnyScannerError: false,
 			validate: func(t *testing.T, sourceResults *results.SecurityCommandResults) {
 				sourceTarget := sourceResults.Targets[0]
@@ -910,12 +1222,12 @@ func TestFilterFailedResultsIfScannersFailuresAreAllowed(t *testing.T) {
 		{
 			name: "ViolationsStatusCode is nil - ensure we dont have violations when func is done",
 			targetResults: func() *results.SecurityCommandResults {
-				result := createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, 0, 0, 0, 0, 0, 0)
+				result := createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, false, 0, 0, 0, 0, 0, 0, 0)
 				result.ViolationsStatusCode = nil
 				return result
 			}(),
 			sourceResults: func() *results.SecurityCommandResults {
-				result := createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, true, 0, 0, 0, 0, 0, 0)
+				result := createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, true, 0, 0, 0, 0, 0, 0, 0)
 				result.ViolationsStatusCode = nil
 				return result
 			}(),
@@ -926,8 +1238,8 @@ func TestFilterFailedResultsIfScannersFailuresAreAllowed(t *testing.T) {
 		},
 		{
 			name:                    "Violations scan failed - should remove all violations",
-			targetResults:           createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, 0, 0, 0, 0, 0, 1),
-			sourceResults:           createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, true, 0, 0, 0, 0, 0, 0),
+			targetResults:           createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, false, 0, 0, 0, 0, 0, 0, 1),
+			sourceResults:           createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, true, 0, 0, 0, 0, 0, 0, 0),
 			failUponAnyScannerError: false,
 			validate: func(t *testing.T, sourceResults *results.SecurityCommandResults) {
 				assert.Nil(t, sourceResults.Violations, "All violations should be removed when violations scan failed")
@@ -935,8 +1247,8 @@ func TestFilterFailedResultsIfScannersFailuresAreAllowed(t *testing.T) {
 		},
 		{
 			name:                    "Specific scanner failed but violations scan succeeded - should filter only that scanner's violations",
-			targetResults:           createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, 1, 0, 0, 0, 0, 0),
-			sourceResults:           createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, true, 0, 0, 0, 0, 0, 0),
+			targetResults:           createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, false, 1, 0, 0, 0, 0, 0, 0),
+			sourceResults:           createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, true, 0, 0, 0, 0, 0, 0, 0),
 			failUponAnyScannerError: false,
 			validate: func(t *testing.T, sourceResults *results.SecurityCommandResults) {
 				assert.Nil(t, sourceResults.Violations.Sca, "SCA violations should be removed when SCA scan failed")
@@ -1138,65 +1450,72 @@ func TestFilterViolationsResults(t *testing.T) {
 		shouldRemoveSca           bool
 		shouldRemoveSecrets       bool
 		shouldRemoveIac           bool
+		shouldRemoveServices      bool
 		shouldRemoveSast          bool
 		shouldRemoveAllViolations bool
 	}{
 		{
 			name:                      "Violations scan failed in source - should remove all violations",
-			sourceResults:             createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, true, 0, 0, 0, 0, 0, 1),
-			targetResults:             createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, 0, 0, 0, 0, 0, 0),
+			sourceResults:             createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, true, 0, 0, 0, 0, 0, 0, 1),
+			targetResults:             createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, false, 0, 0, 0, 0, 0, 0, 0),
 			shouldRemoveAllViolations: true,
 		},
 		{
 			name:                      "Violations scan failed in target - should remove all violations",
-			sourceResults:             createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, true, 0, 0, 0, 0, 0, 0),
-			targetResults:             createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, 0, 0, 0, 0, 0, 1),
+			sourceResults:             createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, true, 0, 0, 0, 0, 0, 0, 0),
+			targetResults:             createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, false, 0, 0, 0, 0, 0, 0, 1),
 			shouldRemoveAllViolations: true,
 		},
 		{
 			name:            "Violations scan succeeded, SCA scan failed in source - should remove only SCA violations",
-			sourceResults:   createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, true, 1, 0, 0, 0, 0, 0),
-			targetResults:   createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, 0, 0, 0, 0, 0, 0),
+			sourceResults:   createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, true, 1, 0, 0, 0, 0, 0, 0),
+			targetResults:   createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, false, 0, 0, 0, 0, 0, 0, 0),
 			shouldRemoveSca: true,
 		},
 		{
 			name:                "Violations scan succeeded, Secrets scan failed in target - should remove only Secrets violations",
-			sourceResults:       createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, true, 0, 0, 0, 0, 0, 0),
-			targetResults:       createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, 0, 0, 1, 0, 0, 0),
+			sourceResults:       createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, true, 0, 0, 0, 0, 0, 0, 0),
+			targetResults:       createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, false, 0, 0, 1, 0, 0, 0, 0),
 			shouldRemoveSecrets: true,
 		},
 		{
 			name:            "Violations scan succeeded, IaC scan failed in both - should remove only IaC violations",
-			sourceResults:   createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, true, 0, 0, 0, 1, 0, 0),
-			targetResults:   createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, 0, 0, 0, 1, 0, 0),
+			sourceResults:   createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, true, 0, 0, 0, 1, 0, 0, 0),
+			targetResults:   createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, false, 0, 0, 0, 1, 0, 0, 0),
 			shouldRemoveIac: true,
 		},
 		{
+			name:                 "Violations scan succeeded, Services scan failed in source - should remove only Services violations",
+			sourceResults:        createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, true, 0, 0, 0, 0, 0, 1, 0),
+			targetResults:        createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, false, 0, 0, 0, 0, 0, 0, 0),
+			shouldRemoveServices: true,
+		},
+		{
 			name:             "Violations scan succeeded, SAST scan failed in source - should remove only SAST violations",
-			sourceResults:    createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, true, 0, 0, 0, 0, 1, 0),
-			targetResults:    createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, 0, 0, 0, 0, 0, 0),
+			sourceResults:    createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, true, 0, 0, 0, 0, 1, 0, 0),
+			targetResults:    createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, false, 0, 0, 0, 0, 0, 0, 0),
 			shouldRemoveSast: true,
 		},
 		{
 			name:                "Violations scan succeeded, multiple scanners failed - should remove multiple violations",
-			sourceResults:       createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, true, 1, 0, 0, 0, 0, 0),
-			targetResults:       createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, 0, 0, 1, 0, 0, 0),
+			sourceResults:       createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, true, 1, 0, 0, 0, 0, 0, 0),
+			targetResults:       createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, false, 0, 0, 1, 0, 0, 0, 0),
 			shouldRemoveSca:     true,
 			shouldRemoveSecrets: true,
 		},
 		{
 			name:          "Violations scan succeeded, all scans succeeded - should not remove any violations",
-			sourceResults: createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, true, 0, 0, 0, 0, 0, 0),
-			targetResults: createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, 0, 0, 0, 0, 0, 0),
+			sourceResults: createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, true, 0, 0, 0, 0, 0, 0, 0),
+			targetResults: createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, false, 0, 0, 0, 0, 0, 0, 0),
 		},
 		{
 			name: "Violations is nil - should not panic",
 			sourceResults: func() *results.SecurityCommandResults {
-				result := createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, 0, 0, 0, 0, 0, 0)
+				result := createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, false, 0, 0, 0, 0, 0, 0, 0)
 				result.Violations = nil
 				return result
 			}(),
-			targetResults: createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, 0, 0, 0, 0, 0, 0),
+			targetResults: createSecurityCommandResultsForTest("test-target", "", false, false, false, false, false, false, false, 0, 0, 0, 0, 0, 0, 0),
 		},
 	}
 
@@ -1228,6 +1547,12 @@ func TestFilterViolationsResults(t *testing.T) {
 					assert.Nil(t, test.sourceResults.Violations.Iac, "IaC violations should be removed")
 				} else {
 					assert.NotNil(t, test.sourceResults.Violations.Iac, "IaC violations should NOT be removed")
+				}
+
+				if test.shouldRemoveServices {
+					assert.Nil(t, test.sourceResults.Violations.Services, "Services violations should be removed")
+				} else {
+					assert.NotNil(t, test.sourceResults.Violations.Services, "Services violations should NOT be removed")
 				}
 
 				if test.shouldRemoveSast {
@@ -1314,6 +1639,21 @@ func TestIsScanFailedInSourceOrTarget(t *testing.T) {
 			targetResult: nil,
 			step:         results.CmdStepIaC,
 			expected:     true,
+		},
+		{
+			name: "Services scan failed in source - should return true",
+			sourceResult: &results.TargetResults{
+				ResultsStatus: results.ResultsStatus{
+					ServicesScanStatusCode: intPtr(1),
+				},
+			},
+			targetResult: &results.TargetResults{
+				ResultsStatus: results.ResultsStatus{
+					ServicesScanStatusCode: intPtr(0),
+				},
+			},
+			step:     results.CmdStepServices,
+			expected: true,
 		},
 		{
 			name:         "Both are nil - should return false",
@@ -1455,7 +1795,7 @@ func intPtr(i int) *int {
 	return &i
 }
 
-func createSecurityCommandResultsForTest(targetLocation string, targetName string, withScaResults bool, withCaResults bool, withSecretsResult bool, withIacResults bool, withSastResults bool, withViolations bool, scaStatusCode int, caStatusCode int, secretsStatusCode int, iacStatusCode int, sastStatusCode int, violationsStatusCode int) *results.SecurityCommandResults {
+func createSecurityCommandResultsForTest(targetLocation string, targetName string, withScaResults bool, withCaResults bool, withSecretsResult bool, withIacResults bool, withSastResults bool, withServicesResults bool, withViolations bool, scaStatusCode int, caStatusCode int, secretsStatusCode int, iacStatusCode int, sastStatusCode int, servicesStatusCode int, violationsStatusCode int) *results.SecurityCommandResults {
 	targetResults := &results.TargetResults{
 		ScanTarget: results.ScanTarget{Target: targetLocation, Name: targetName},
 	}
@@ -1466,12 +1806,12 @@ func createSecurityCommandResultsForTest(targetLocation string, targetName strin
 		}
 	}
 
-	if withCaResults || withSecretsResult || withIacResults || withSastResults {
+	if withCaResults || withSecretsResult || withIacResults || withSastResults || withServicesResults {
 		targetResults.JasResults = &results.JasScansResults{}
 		if withCaResults {
 			targetResults.JasResults.ApplicabilityScanResults = []*sarif.Run{{}}
 		}
-		if withSecretsResult || withIacResults || withSastResults {
+		if withSecretsResult || withIacResults || withSastResults || withServicesResults {
 			targetResults.JasResults.JasVulnerabilities = results.JasScanResults{}
 			if withSecretsResult {
 				targetResults.JasResults.JasVulnerabilities.SecretsScanResults = []*sarif.Run{{}}
@@ -1482,6 +1822,9 @@ func createSecurityCommandResultsForTest(targetLocation string, targetName strin
 			if withSastResults {
 				targetResults.JasResults.JasVulnerabilities.SastScanResults = []*sarif.Run{{}}
 			}
+			if withServicesResults {
+				targetResults.JasResults.JasVulnerabilities.ServicesScanResults = []*sarif.Run{{}}
+			}
 		}
 	}
 
@@ -1491,6 +1834,7 @@ func createSecurityCommandResultsForTest(targetLocation string, targetName strin
 		SecretsScanStatusCode:        intPtr(secretsStatusCode),
 		IacScanStatusCode:            intPtr(iacStatusCode),
 		SastScanStatusCode:           intPtr(sastStatusCode),
+		ServicesScanStatusCode:       intPtr(servicesStatusCode),
 	}
 
 	result := &results.SecurityCommandResults{
@@ -1500,10 +1844,11 @@ func createSecurityCommandResultsForTest(targetLocation string, targetName strin
 
 	if withViolations {
 		result.Violations = &violationutils.Violations{
-			Sca:     []violationutils.CveViolation{{}},
-			Secrets: []violationutils.JasViolation{{}},
-			Iac:     []violationutils.JasViolation{{}},
-			Sast:    []violationutils.JasViolation{{}},
+			Sca:      []violationutils.CveViolation{{}},
+			Secrets:  []violationutils.JasViolation{{}},
+			Iac:      []violationutils.JasViolation{{}},
+			Services: []violationutils.JasViolation{{}},
+			Sast:     []violationutils.JasViolation{{}},
 		}
 	}
 
