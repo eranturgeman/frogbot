@@ -135,6 +135,15 @@ func findRelevantPrID(pullRequests []vcsclient.PullRequestInfo, branch string) (
 	return
 }
 
+func findRelevantPrIDByBranchPrefix(pullRequests []vcsclient.PullRequestInfo, branchPrefix string) (prId int, branchName string) {
+	for _, pr := range pullRequests {
+		if strings.HasPrefix(pr.Source.Name, branchPrefix) && pr.Target.Name == mainBranch {
+			return int(pr.ID), pr.Source.Name
+		}
+	}
+	return 0, ""
+}
+
 func getOpenPullRequests(t *testing.T, client vcsclient.VcsClient, testDetails *IntegrationTestDetails) []vcsclient.PullRequestInfo {
 	ctx := context.Background()
 	pullRequests, err := client.ListOpenPullRequests(ctx, testDetails.RepoOwner, testDetails.RepoName)
@@ -214,17 +223,14 @@ func runScanRepositoryCmd(t *testing.T, client vcsclient.VcsClient, testDetails 
 
 	pullRequests := getOpenPullRequests(t, client, testDetails)
 
-	expectedBranches := []string{
-		"frogbot-snyk-5aaa88cc32aaaf2d8d893decd0a1b284",
-		"frogbot-lodash-36ab76ead8f9cace70988ea19d280c93",
-		"frogbot-minimist-e6e68f7e53c2b59c6bd946e00af797f7",
-	}
-	for _, expectedBranch := range expectedBranches {
-		prId := findRelevantPrID(pullRequests, expectedBranch)
-		assert.NotZero(t, prId, "Expected to find PR for branch %s", expectedBranch)
+	expectedFixPackages := []string{"snyk", "lodash", "minimist"}
+	for _, pkg := range expectedFixPackages {
+		branchPrefix := scanRepoTestBranchNamePrefix + pkg + "-"
+		prId, branchName := findRelevantPrIDByBranchPrefix(pullRequests, branchPrefix)
+		assert.NotZero(t, prId, "Expected to find PR for package %s", pkg)
 		if prId != 0 {
 			closePullRequest(t, client, testDetails, prId)
-			assert.NoError(t, gitManager.RemoveRemoteBranch(expectedBranch))
+			assert.NoError(t, gitManager.RemoveRemoteBranch(branchName))
 		}
 	}
 }
