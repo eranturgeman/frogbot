@@ -41,6 +41,7 @@ import (
 const (
 	ScanPullRequest                     = "scan-pull-request"
 	ScanRepository                      = "scan-repository"
+	AutoPr                              = "auto-pr"
 	RootDir                             = "."
 	branchNameRegex                     = `[~^:?\\\[\]@{}*]`
 	dependencySubmissionFrogbotDetector = "JFrog Frogbot"
@@ -372,10 +373,12 @@ func GetVulnerabiltiesUniqueID(vulnerability formats.VulnerabilityOrViolationRow
 func ConvertSarifPathsToRelative(issues *issues.ScansIssuesCollection, workingDirs ...string) {
 	convertSarifPathsInCveApplicability(issues.ScaVulnerabilities, workingDirs...)
 	convertSarifPathsInIacs(issues.IacVulnerabilities, workingDirs...)
+	convertSarifPathsInServices(issues.ServicesVulnerabilities, workingDirs...)
 	convertSarifPathsInSecrets(issues.SecretsVulnerabilities, workingDirs...)
 	convertSarifPathsInSast(issues.SastVulnerabilities, workingDirs...)
 	convertSarifPathsInCveApplicability(issues.ScaViolations, workingDirs...)
 	convertSarifPathsInIacs(issues.IacViolations, workingDirs...)
+	convertSarifPathsInServices(issues.ServicesViolations, workingDirs...)
 	convertSarifPathsInSecrets(issues.SecretsViolations, workingDirs...)
 	convertSarifPathsInSast(issues.SastViolations, workingDirs...)
 }
@@ -399,6 +402,15 @@ func convertSarifPathsInIacs(iacs []formats.SourceCodeRow, workingDirs ...string
 		iac := &iacs[i]
 		for _, wd := range workingDirs {
 			iac.Location.File = utils.GetRelativePath(iac.Location.File, wd)
+		}
+	}
+}
+
+func convertSarifPathsInServices(services []formats.SourceCodeRow, workingDirs ...string) {
+	for i := range services {
+		service := &services[i]
+		for _, wd := range workingDirs {
+			service.Location.File = utils.GetRelativePath(service.Location.File, wd)
 		}
 	}
 }

@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/jfrog/gofrog/datastructures"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
+
+	"github.com/jfrog/gofrog/datastructures"
 
 	"github.com/jfrog/froggit-go/vcsclient"
 	"github.com/jfrog/froggit-go/vcsutils"
@@ -15,6 +18,7 @@ import (
 	"github.com/jfrog/jfrog-cli-security/utils/jasutils"
 	"github.com/jfrog/jfrog-cli-security/utils/results"
 	"github.com/jfrog/jfrog-cli-security/utils/results/conversion"
+	"github.com/jfrog/jfrog-cli-security/utils/techutils"
 	"github.com/jfrog/jfrog-cli-security/utils/xsc"
 	"github.com/jfrog/jfrog-client-go/utils/log"
 
@@ -28,6 +32,19 @@ const (
 	analyticsScanPrScanType              = "PR"
 	vulnerabilitiesFilteringErrorMessage = "%s scan has completed with errors. Vulnerabilities results will be removed from final report"
 	violationsFilteringErrorMessage      = "%s scan has completed with errors. Violations results will be removed from final report"
+	// Errors below are only surfaced when Maven or Gradle is detected (see blockRiskyTechsWithoutEnvironmentGuard)
+	noGitHubEnvErr           = "frogbot did not scan this PR, because a GitHub Environment named 'frogbot' does not exist. Please refer to the Frogbot documentation for instructions on how to create the Environment"
+	noGitHubEnvReviewersErr  = "frogbot did not scan this PR, because the existing GitHub Environment named 'frogbot' doesn't have reviewers selected. Please refer to the Frogbot documentation for instructions on how to create the Environment"
+	noGitHubEnvInWorkflowErr = "frogbot did not scan this PR, because the workflow file does not set 'environment: frogbot'. Please refer to the Frogbot documentation for instructions on how to configure the Environment"
+)
+
+var (
+	// Matches the inline string form: environment: frogbot / environment: "frogbot" / environment: 'frogbot'
+	frogbotInlineEnvPattern = regexp.MustCompile(`(?m)^\s*environment\s*:\s*['"]?frogbot['"]?\s*(#.*)?$`)
+	// Matches the object form, when 'name' is the line immediately following 'environment:':
+	//   environment:
+	//     name: frogbot
+	frogbotObjectEnvPattern = regexp.MustCompile(`(?m)^\s*environment\s*:\s*(#.*)?\n\s*name\s*:\s*['"]?frogbot['"]?\s*(#.*)?$`)
 )
 
 // targetPair represents a matched pair of source and target scan results
@@ -102,12 +119,101 @@ func createBaseScanDetails(repoConfig *utils.Repository, client vcsclient.VcsCli
 	if err != nil {
 		return
 	}
-	return utils.NewScanDetails(client, &repoConfig.Server, &repoConfig.Params.Git).
+	scanDetails = utils.NewScanDetails(client, &repoConfig.Server, &repoConfig.Params.Git).
 		SetJfrogVersions(repoConfig.Params.XrayVersion, repoConfig.Params.XscVersion).
 		SetResultsContext(repositoryCloneUrl, repoConfig.Params.JFrogPlatform.JFrogProjectKey, false).
 		SetConfigProfile(repoConfig.Params.ConfigProfile).
 		SetDiffScan(true).
-		SetXscPRGitInfoContext(repoConfig.Params.Git.Project, client, repoConfig.Params.Git.PullRequestDetails), nil
+		SetXscPRGitInfoContext(repoConfig.Params.Git.Project, client, repoConfig.Params.Git.PullRequestDetails)
+	if repoConfig.Params.Git.GitProvider == vcsutils.GitHub {
+		scanDetails.SetRiskyTechEnvironmentGuard(blockRiskyTechsWithoutEnvironmentGuard(client, repoConfig))
+	}
+	return scanDetails, nil
+}
+
+func blockRiskyTechsWithoutEnvironmentGuard(client vcsclient.VcsClient, repoConfig *utils.Repository) func(detectedTechnologies []techutils.Technology) error {
+	return func(detectedTechnologies []techutils.Technology) error {
+		if !slices.Contains(detectedTechnologies, techutils.Maven) && !slices.Contains(detectedTechnologies, techutils.Gradle) {
+			return nil
+		}
+		return verifyGitHubFrogbotEnvironment(client, repoConfig)
+	}
+}
+
+// Verify that the 'frogbot' GitHub environment was properly configured on the repository
+func verifyGitHubFrogbotEnvironment(client vcsclient.VcsClient, repoConfig *utils.Repository) error {
+	if repoConfig.Params.Git.APIEndpoint != "" && repoConfig.Params.Git.APIEndpoint != "https://api.github.com" {
+		// Don't verify 'frogbot' environment on GitHub on-prem
+		return nil
+	}
+	if _, exist := os.LookupEnv(utils.GitHubActionsEnv); !exist {
+		// Don't verify 'frogbot' environment on non GitHub Actions CI
+		return nil
+	}
+
+	// If the repository is not public, using 'frogbot' environment is not mandatory
+	repoInfo, err := client.GetRepositoryInfo(context.Background(), repoConfig.Params.Git.RepoOwner, repoConfig.Params.Git.RepoName)
+	if err != nil {
+		return err
+	}
+	if repoInfo.RepositoryVisibility != vcsclient.Public {
+		return nil
+	}
+
+	// Get the 'frogbot' environment info and make sure it exists and includes reviewers
+	repoEnvInfo, err := client.GetRepositoryEnvironmentInfo(context.Background(), repoConfig.Params.Git.RepoOwner, repoConfig.Params.Git.RepoName, "frogbot")
+	if err != nil {
+		return errors.New(err.Error() + "\n" + noGitHubEnvErr)
+	}
+	if len(repoEnvInfo.Reviewers) == 0 {
+		return errors.New(noGitHubEnvReviewersErr)
+	}
+
+	return verifyWorkflowContainsFrogbotEnvironment(client)
+}
+
+// Fetches the workflow file that triggered Frogbot (via GITHUB_WORKFLOW_REF) and verifies it contains 'environment: frogbot'.
+func verifyWorkflowContainsFrogbotEnvironment(client vcsclient.VcsClient) error {
+	workflowRef := os.Getenv(utils.GitHubWorkflowRefEnv)
+	if workflowRef == "" {
+		return nil
+	}
+
+	// GITHUB_WORKFLOW_REF format: {owner}/{repo}/{path}@{ref}
+	// e.g. eranturgeman/jfrog-security-test-app/.github/workflows/frogbot-scan-pull-request.yml@refs/heads/main
+	// Note: the owner/repo here is the workflow's repo, which may differ from the scanned repo.
+	atIdx := strings.LastIndex(workflowRef, "@")
+	if atIdx == -1 {
+		return fmt.Errorf("failed verifying environment in workflow file: unexpected GITHUB_WORKFLOW_REF format, missing '@' separator: '%s'", workflowRef)
+	}
+	pathPart := workflowRef[:atIdx]
+	ref := workflowRef[atIdx+1:]
+
+	// Parse owner, repo, and file path from "{owner}/{repo}/{path}"
+	parts := strings.SplitN(pathPart, "/", 3)
+	if len(parts) < 3 {
+		return fmt.Errorf("failed verifying environment in workflow file: unexpected GITHUB_WORKFLOW_REF format, expected '{owner}/{repo}/{path}' but got '%s'", pathPart)
+	}
+	owner, repo, filePath := parts[0], parts[1], parts[2]
+
+	// Extract branch name from ref (e.g. "refs/heads/main" → "main")
+	branch := ref
+	if b, ok := strings.CutPrefix(ref, "refs/heads/"); ok {
+		branch = b
+	} else if b, ok := strings.CutPrefix(ref, "refs/tags/"); ok {
+		branch = b
+	}
+
+	fileContent, _, err := client.DownloadFileFromRepo(context.Background(), owner, repo, branch, filePath)
+	if err != nil {
+		return fmt.Errorf("failed to fetch workflow file '%s' for environment verification: %s", filePath, err.Error())
+	}
+
+	content := string(fileContent)
+	if !frogbotInlineEnvPattern.MatchString(content) && !frogbotObjectEnvPattern.MatchString(content) {
+		return errors.New(noGitHubEnvInWorkflowErr)
+	}
+	return nil
 }
 
 func downloadSourceAndTarget(repoConfig *utils.Repository, scanDetails *utils.ScanDetails) (sourceBranchWd, targetBranchWd string, cleanup func() error, err error) {
@@ -196,6 +302,7 @@ func filterFailedResultsIfScannersFailuresAreAllowed(targetResults, sourceResult
 		filterScaResultsIfScanFailed(targetSourceResultsPair.target, targetSourceResultsPair.source)
 		filterJasResultsIfScanFailed(targetSourceResultsPair.target, targetSourceResultsPair.source, results.CmdStepContextualAnalysis)
 		filterJasResultsIfScanFailed(targetSourceResultsPair.target, targetSourceResultsPair.source, results.CmdStepSecrets)
+		filterJasResultsIfScanFailed(targetSourceResultsPair.target, targetSourceResultsPair.source, results.CmdStepServices)
 		filterJasResultsIfScanFailed(targetSourceResultsPair.target, targetSourceResultsPair.source, results.CmdStepIaC)
 		filterJasResultsIfScanFailed(targetSourceResultsPair.target, targetSourceResultsPair.source, results.CmdStepSast)
 	}
@@ -205,6 +312,7 @@ func filterFailedResultsIfScannersFailuresAreAllowed(targetResults, sourceResult
 		filterScaResultsIfScanFailed(targetSourceResultsPair.target, targetSourceResultsPair.source)
 		filterJasResultsIfScanFailed(targetSourceResultsPair.target, targetSourceResultsPair.source, results.CmdStepContextualAnalysis)
 		filterJasResultsIfScanFailed(targetSourceResultsPair.target, targetSourceResultsPair.source, results.CmdStepSecrets)
+		filterJasResultsIfScanFailed(targetSourceResultsPair.target, targetSourceResultsPair.source, results.CmdStepServices)
 		filterJasResultsIfScanFailed(targetSourceResultsPair.target, targetSourceResultsPair.source, results.CmdStepIaC)
 		filterJasResultsIfScanFailed(targetSourceResultsPair.target, targetSourceResultsPair.source, results.CmdStepSast)
 	}
@@ -214,6 +322,7 @@ func filterFailedResultsIfScannersFailuresAreAllowed(targetResults, sourceResult
 		filterScaResultsIfScanFailed(nil, sourceResult)
 		filterJasResultsIfScanFailed(nil, sourceResult, results.CmdStepContextualAnalysis)
 		filterJasResultsIfScanFailed(nil, sourceResult, results.CmdStepSecrets)
+		filterJasResultsIfScanFailed(nil, sourceResult, results.CmdStepServices)
 		filterJasResultsIfScanFailed(nil, sourceResult, results.CmdStepIaC)
 		filterJasResultsIfScanFailed(nil, sourceResult, results.CmdStepSast)
 	}
@@ -255,6 +364,12 @@ func filterSpecificScannersViolationsIfScanFailed(sourceResults *results.Securit
 		(targetStatusCodes.SecretsScanStatusCode != nil && *targetStatusCodes.SecretsScanStatusCode != 0) {
 		log.Debug(fmt.Sprintf(violationsFilteringErrorMessage, results.CmdStepSecrets))
 		sourceResults.Violations.Secrets = nil
+	}
+
+	if (sourceStatusCodes.ServicesScanStatusCode != nil && *sourceStatusCodes.ServicesScanStatusCode != 0) ||
+		(targetStatusCodes.ServicesScanStatusCode != nil && *targetStatusCodes.ServicesScanStatusCode != 0) {
+		log.Debug(fmt.Sprintf(violationsFilteringErrorMessage, results.CmdStepServices))
+		sourceResults.Violations.Services = nil
 	}
 
 	if (sourceStatusCodes.IacScanStatusCode != nil && *sourceStatusCodes.IacScanStatusCode != 0) ||
@@ -355,6 +470,10 @@ func filterJasResultsIfScanFailed(targetResult, sourceResult *results.TargetResu
 		if sourceResult.JasResults != nil {
 			sourceResult.JasResults.JasVulnerabilities.SecretsScanResults = nil
 		}
+	case results.CmdStepServices:
+		if sourceResult.JasResults != nil {
+			sourceResult.JasResults.JasVulnerabilities.ServicesScanResults = nil
+		}
 	case results.CmdStepIaC:
 		if sourceResult.JasResults != nil {
 			sourceResult.JasResults.JasVulnerabilities.IacScanResults = nil
@@ -446,6 +565,9 @@ func scanResultsToIssuesCollection(scanResults *results.SecurityCommandResults, 
 		IacVulnerabilities: simpleJsonResults.IacsVulnerabilities,
 		IacViolations:      simpleJsonResults.IacsViolations,
 
+		ServicesVulnerabilities: simpleJsonResults.ServicesVulnerabilities,
+		ServicesViolations:      simpleJsonResults.ServicesViolations,
+
 		SecretsVulnerabilities: simpleJsonResults.SecretsVulnerabilities,
 		SecretsViolations:      simpleJsonResults.SecretsViolations,
 
@@ -485,6 +607,7 @@ func getScanStatus(cmdResults ...formats.SimpleJsonResults) formats.ScanStatus {
 	for _, sourceResults := range cmdResults[1:] {
 		statuses.ScaStatusCode = getWorstScanStatus(statuses.ScaStatusCode, sourceResults.Statuses.ScaStatusCode)
 		statuses.IacStatusCode = getWorstScanStatus(statuses.IacStatusCode, sourceResults.Statuses.IacStatusCode)
+		statuses.ServicesStatusCode = getWorstScanStatus(statuses.ServicesStatusCode, sourceResults.Statuses.ServicesStatusCode)
 		statuses.SecretsStatusCode = getWorstScanStatus(statuses.SecretsStatusCode, sourceResults.Statuses.SecretsStatusCode)
 		statuses.SastStatusCode = getWorstScanStatus(statuses.SastStatusCode, sourceResults.Statuses.SastStatusCode)
 		statuses.ApplicabilityStatusCode = getWorstScanStatus(statuses.ApplicabilityStatusCode, sourceResults.Statuses.ApplicabilityStatusCode)
