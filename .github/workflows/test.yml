@@ -266,6 +266,7 @@ jobs:
     runs-on: ${{ matrix.os }}-latest
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         os: [ ubuntu, windows, macos ]
     env:
@@ -342,6 +343,7 @@ jobs:
     runs-on: ${{ matrix.os }}-latest
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         os: [ ubuntu, windows, macos ]
     env:
