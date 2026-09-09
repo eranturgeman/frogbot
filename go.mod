@@ -1,6 +1,6 @@
 module github.com/jfrog/frogbot/v3
 
-go 1.26.5
+go 1.26.6
 
 replace github.com/CycloneDX/cyclonedx-go => github.com/CycloneDX/cyclonedx-go v0.10.0
 
@@ -9,12 +9,12 @@ require (
 	github.com/go-git/go-git/v5 v5.19.1
 	github.com/golang/mock v1.6.0
 	github.com/google/go-github/v45 v45.2.0
-	github.com/jfrog/build-info-go v1.13.1-0.20260818195724-23e528d30b96
+	github.com/jfrog/build-info-go v1.13.1-0.20260902120316-b325d342b210
 	github.com/jfrog/froggit-go v1.23.1
-	github.com/jfrog/gofrog v1.7.6
-	github.com/jfrog/jfrog-cli-core/v2 v2.60.1-0.20260814125750-77deb9f6259c
-	github.com/jfrog/jfrog-cli-security v1.36.0
-	github.com/jfrog/jfrog-client-go v1.55.1-0.20260813100550-0f2168d02558
+	github.com/jfrog/gofrog v1.7.7
+	github.com/jfrog/jfrog-cli-core/v2 v2.60.1-0.20260831061529-c6dd293bccca
+	github.com/jfrog/jfrog-cli-security v1.37.0
+	github.com/jfrog/jfrog-client-go v1.55.1-0.20260908141255-cbf686ec1698
 	github.com/owenrumney/go-sarif/v3 v3.2.3
 	github.com/stretchr/testify v1.11.1
 	github.com/urfave/cli/v2 v2.27.7
@@ -62,9 +62,9 @@ require (
 	github.com/hashicorp/yamux v0.1.1 // indirect
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
 	github.com/jedib0t/go-pretty/v6 v6.8.3 // indirect
-	github.com/jfrog/archiver/v3 v3.6.4 // indirect
+	github.com/jfrog/archiver/v3 v3.6.5 // indirect
 	github.com/jfrog/jfrog-apps-config v1.0.1 // indirect
-	github.com/jfrog/jfrog-cli-artifactory v0.8.1-0.20260819070735-a590327f2489 // indirect
+	github.com/jfrog/jfrog-cli-artifactory v0.8.1-0.20260908123315-10cfe381853a // indirect
 	github.com/kevinburke/ssh_config v1.6.0 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
