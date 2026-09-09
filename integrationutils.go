@@ -258,6 +258,30 @@ func cleanupLeftoverFrogbotPRs(t *testing.T, client vcsclient.VcsClient, testDet
 // except the default branch and the 'issues-branch' baseline.
 func cleanupIntegrationArtifacts(t *testing.T, client vcsclient.VcsClient, testDetails *IntegrationTestDetails) {
 	ctx := context.Background()
+
+	// buildGitManager reads the remote URL from the current directory's existing .git if one is
+	// present (e.g. this job's own checkout of the frogbot repo), so we must clone the fixture repo
+	// into a fresh directory first - otherwise branch removal silently targets the wrong remote.
+	tmpDir, restoreFunc := utils.ChangeToTempDirWithCallback(t)
+	defer func() {
+		assert.NoError(t, restoreFunc())
+	}()
+
+	cloneOptions := &git.CloneOptions{
+		URL: testDetails.GitCloneURL,
+		Auth: &githttp.BasicAuth{
+			Username: testDetails.GitUsername,
+			Password: testDetails.GitToken,
+		},
+		RemoteName:    "origin",
+		ReferenceName: utils.GetFullBranchName(mainBranch),
+		SingleBranch:  true,
+		Depth:         1,
+		Tags:          git.NoTags,
+	}
+	_, err := git.PlainClone(tmpDir, false, cloneOptions)
+	require.NoError(t, err)
+
 	gitManager := buildGitManager(t, testDetails)
 
 	branches, err := client.ListBranches(ctx, testDetails.RepoOwner, testDetails.RepoName)

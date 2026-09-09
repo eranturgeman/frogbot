@@ -192,6 +192,9 @@ jobs:
     name: GitHub Integration Tests
     needs: Pretest
     runs-on: ubuntu-latest
+    concurrency:
+      group: github-integration-fixture
+      cancel-in-progress: false
     env:
       JFROG_CLI_LOG_LEVEL: "DEBUG"
     steps:
@@ -224,7 +227,7 @@ jobs:
             ${{ runner.os }}-go-
 
       - name: Run Tests
-        run: go test -tags integration github_test.go integrationutils.go commands.go -v -race -timeout 30m -cover
+        run: go test -tags integration -run 'TestGitHub_' github_test.go integrationutils.go commands.go -v -race -timeout 30m -cover
         env:
           JF_URL: ${{ secrets.PLATFORM_URL }}
           JF_ACCESS_TOKEN: ${{ secrets.PLATFORM_ADMIN_TOKEN }}
@@ -232,9 +235,12 @@ jobs:
 
   github-integration-cleanup:
     name: Cleanup GitHub Integration Test Artifacts
-    needs: github-integration
-    if: always()
+    needs: [ Pretest, github-integration ]
+    if: ${{ always() && !cancelled() && needs.Pretest.result != 'skipped' && needs.github-integration.result != 'skipped' }}
     runs-on: ubuntu-latest
+    concurrency:
+      group: github-integration-fixture
+      cancel-in-progress: false
     env:
       JFROG_CLI_LOG_LEVEL: "DEBUG"
     steps:
@@ -267,8 +273,12 @@ jobs:
     runs-on: ${{ matrix.os }}-latest
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         os: [ ubuntu, windows, macos ]
+    concurrency:
+      group: azure-integration-fixture
+      cancel-in-progress: false
     env:
       JFROG_CLI_LOG_LEVEL: "DEBUG"
     steps:
@@ -301,7 +311,7 @@ jobs:
             ${{ runner.os }}-go-
 
       - name: Run Tests
-        run: go test -tags integration azure_test.go integrationutils.go commands.go -v -race -timeout 30m -cover
+        run: go test -tags integration -run 'TestAzureRepos_' azure_test.go integrationutils.go commands.go -v -race -timeout 30m -cover
         env:
           JF_URL: ${{ secrets.PLATFORM_URL }}
           JF_ACCESS_TOKEN: ${{ secrets.PLATFORM_ADMIN_TOKEN }}
@@ -309,9 +319,12 @@ jobs:
 
   azure-integration-cleanup:
     name: Cleanup Azure Integration Test Artifacts
-    needs: azure-integration
-    if: always()
+    needs: [ Pretest, azure-integration ]
+    if: ${{ always() && !cancelled() && needs.Pretest.result != 'skipped' && needs.azure-integration.result != 'skipped' }}
     runs-on: ubuntu-latest
+    concurrency:
+      group: azure-integration-fixture
+      cancel-in-progress: false
     env:
       JFROG_CLI_LOG_LEVEL: "DEBUG"
     steps:
@@ -344,8 +357,12 @@ jobs:
     runs-on: ${{ matrix.os }}-latest
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         os: [ ubuntu, windows, macos ]
+    concurrency:
+      group: gitlab-integration-fixture
+      cancel-in-progress: false
     env:
       JFROG_CLI_LOG_LEVEL: "DEBUG"
     steps:
@@ -378,7 +395,7 @@ jobs:
             ${{ runner.os }}-go-
 
       - name: Run Tests
-        run: go test -tags integration gitlab_test.go integrationutils.go commands.go -v -race -timeout 30m -cover
+        run: go test -tags integration -run 'TestGitLab_' gitlab_test.go integrationutils.go commands.go -v -race -timeout 30m -cover
         env:
           JF_URL: ${{ secrets.PLATFORM_URL }}
           JF_ACCESS_TOKEN: ${{ secrets.PLATFORM_ADMIN_TOKEN }}
@@ -386,9 +403,12 @@ jobs:
 
   gitlab-integration-cleanup:
     name: Cleanup GitLab Integration Test Artifacts
-    needs: gitlab-integration
-    if: always()
+    needs: [ Pretest, gitlab-integration ]
+    if: ${{ always() && !cancelled() && needs.Pretest.result != 'skipped' && needs.gitlab-integration.result != 'skipped' }}
     runs-on: ubuntu-latest
+    concurrency:
+      group: gitlab-integration-fixture
+      cancel-in-progress: false
     env:
       JFROG_CLI_LOG_LEVEL: "DEBUG"
     steps:
