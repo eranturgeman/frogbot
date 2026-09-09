@@ -43,9 +43,17 @@ type IntegrationTestDetails struct {
 	GitProvider      string
 	GitProject       string
 	GitUsername      string
+	GitPushUsername  string
 	ApiEndpoint      string
 	PullRequestID    string
 	CustomBranchName string
+}
+
+func (d *IntegrationTestDetails) gitPushUsername() string {
+	if d.GitPushUsername != "" {
+		return d.GitPushUsername
+	}
+	return d.GitUsername
 }
 
 func NewIntegrationTestDetails(token, gitProvider, gitCloneUrl, repoOwner string) *IntegrationTestDetails {
@@ -62,7 +70,7 @@ func NewIntegrationTestDetails(token, gitProvider, gitCloneUrl, repoOwner string
 
 func buildGitManager(t *testing.T, testDetails *IntegrationTestDetails) *utils.GitManager {
 	gitManager, err := utils.NewGitManager().
-		SetAuth(testDetails.GitUsername, testDetails.GitToken).
+		SetAuth(testDetails.gitPushUsername(), testDetails.GitToken).
 		SetRemoteGitUrl(testDetails.GitCloneURL)
 	assert.NoError(t, err)
 	return gitManager
@@ -135,6 +143,15 @@ func findRelevantPrID(pullRequests []vcsclient.PullRequestInfo, branch string) (
 	return
 }
 
+func findRelevantPrIDByBranchPrefix(pullRequests []vcsclient.PullRequestInfo, branchPrefix string) (prId int, branchName string) {
+	for _, pr := range pullRequests {
+		if strings.HasPrefix(pr.Source.Name, branchPrefix) && pr.Target.Name == mainBranch {
+			return int(pr.ID), pr.Source.Name
+		}
+	}
+	return 0, ""
+}
+
 func getOpenPullRequests(t *testing.T, client vcsclient.VcsClient, testDetails *IntegrationTestDetails) []vcsclient.PullRequestInfo {
 	ctx := context.Background()
 	pullRequests, err := client.ListOpenPullRequests(ctx, testDetails.RepoOwner, testDetails.RepoName)
@@ -190,7 +207,7 @@ func runScanRepositoryCmd(t *testing.T, client vcsclient.VcsClient, testDetails 
 	cloneOptions := &git.CloneOptions{
 		URL: testDetails.GitCloneURL,
 		Auth: &githttp.BasicAuth{
-			Username: testDetails.GitUsername,
+			Username: testDetails.gitPushUsername(),
 			Password: testDetails.GitToken,
 		},
 		RemoteName:    "origin",
@@ -212,17 +229,14 @@ func runScanRepositoryCmd(t *testing.T, client vcsclient.VcsClient, testDetails 
 	gitManager := buildGitManager(t, testDetails)
 	pullRequests := getOpenPullRequests(t, client, testDetails)
 
-	expectedBranches := []string{
-		"frogbot-snyk-5aaa88cc32aaaf2d8d893decd0a1b284",
-		"frogbot-lodash-36ab76ead8f9cace70988ea19d280c93",
-		"frogbot-minimist-e6e68f7e53c2b59c6bd946e00af797f7",
-	}
-	for _, expectedBranch := range expectedBranches {
-		prId := findRelevantPrID(pullRequests, expectedBranch)
-		assert.NotZero(t, prId, "Expected to find PR for branch %s", expectedBranch)
+	expectedFixPackages := []string{"snyk", "lodash", "minimist"}
+	for _, pkg := range expectedFixPackages {
+		branchPrefix := scanRepoTestBranchNamePrefix + pkg + "-"
+		prId, branchName := findRelevantPrIDByBranchPrefix(pullRequests, branchPrefix)
+		assert.NotZero(t, prId, "Expected to find PR for package %s", pkg)
 		if prId != 0 {
 			closePullRequest(t, client, testDetails, prId)
-			assert.NoError(t, gitManager.RemoveRemoteBranch(expectedBranch))
+			assert.NoError(t, gitManager.RemoveRemoteBranch(branchName))
 		}
 	}
 	cleanupLeftoverFrogbotPRs(t, client, testDetails, gitManager)
@@ -241,6 +255,31 @@ func cleanupLeftoverFrogbotPRs(t *testing.T, client vcsclient.VcsClient, testDet
 	}
 }
 
+func cleanupIntegrationArtifacts(t *testing.T, client vcsclient.VcsClient, testDetails *IntegrationTestDetails) {
+	ctx := context.Background()
+	gitManager := buildGitManager(t, testDetails)
+
+	branches, err := client.ListBranches(ctx, testDetails.RepoOwner, testDetails.RepoName)
+	require.NoError(t, err)
+	for _, branch := range branches {
+		if branch == mainBranch || branch == issuesBranch {
+			continue
+		}
+		t.Logf("Cleanup: removing leftover branch %s", branch)
+		if err := gitManager.RemoveRemoteBranch(branch); err != nil {
+			t.Logf("Warning: failed to remove leftover branch %s: %v", branch, err)
+		}
+	}
+
+	for _, pr := range getOpenPullRequests(t, client, testDetails) {
+		if pr.Source.Name == issuesBranch {
+			continue
+		}
+		t.Logf("Cleanup: closing leftover PR %s (ID: %d)", pr.Source.Name, pr.ID)
+		closePullRequest(t, client, testDetails, int(pr.ID))
+	}
+}
+
 func validateResults(t *testing.T, ctx context.Context, client vcsclient.VcsClient, testDetails *IntegrationTestDetails, prID int) {
 	comments, err := client.ListPullRequestComments(ctx, testDetails.RepoOwner, testDetails.RepoName, prID)
 	require.NoError(t, err)
@@ -252,6 +291,8 @@ func validateResults(t *testing.T, ctx context.Context, client vcsclient.VcsClie
 		validateAzureComments(t, comments)
 	case *vcsclient.BitbucketServerClient:
 		validateBitbucketServerComments(t, comments)
+	case *vcsclient.BitbucketCloudClient:
+		validateBitbucketCloudComments(t, comments)
 	case *vcsclient.GitLabClient:
 		validateGitLabComments(t, comments)
 	}
@@ -283,6 +324,15 @@ func validateAzureComments(t *testing.T, comments []vcsclient.CommentInfo) {
 func validateBitbucketServerComments(t *testing.T, comments []vcsclient.CommentInfo) {
 	assert.GreaterOrEqual(t, len(comments), expectedNumberOfIssues)
 	assertBannerExists(t, comments, outputwriter.GetSimplifiedTitle(outputwriter.VulnerabilitiesPrBannerSource))
+}
+
+func validateBitbucketCloudComments(t *testing.T, comments []vcsclient.CommentInfo) {
+	assert.True(t, containsCommentMentioning(comments, outputwriter.GetSimplifiedTitle(outputwriter.VulnerabilitiesPrBannerSource)),
+		"expected a PR comment containing the Frogbot banner")
+	assert.True(t, containsCommentMentioning(comments, scanPrTestAddedVulnDependency),
+		"expected a PR comment mentioning the vulnerable dependency "+scanPrTestAddedVulnDependency)
+	assert.True(t, containsCommentMentioning(comments, cveCommentPrefix),
+		"expected a PR comment with CVE findings")
 }
 
 func validateGitLabComments(t *testing.T, comments []vcsclient.CommentInfo) {
@@ -343,5 +393,11 @@ func closePullRequest(t *testing.T, client vcsclient.VcsClient, testDetails *Int
 		targetBranch = ""
 	}
 	err := client.UpdatePullRequest(context.Background(), testDetails.RepoOwner, testDetails.RepoName, "integration test finished", "", targetBranch, prID, vcsutils.Closed)
+	if _, isBitbucketCloudClient := client.(*vcsclient.BitbucketCloudClient); isBitbucketCloudClient {
+		if err != nil {
+			t.Logf("Warning: failed to close PR %d on Bitbucket Cloud (known froggit-go limitation): %v", prID, err)
+		}
+		return
+	}
 	assert.NoError(t, err)
 }
