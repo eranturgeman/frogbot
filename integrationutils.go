@@ -426,11 +426,5 @@ func closePullRequest(t *testing.T, client vcsclient.VcsClient, testDetails *Int
 		targetBranch = ""
 	}
 	err := client.UpdatePullRequest(context.Background(), testDetails.RepoOwner, testDetails.RepoName, "integration test finished", "", targetBranch, prID, vcsutils.Closed)
-	if _, isBitbucketCloudClient := client.(*vcsclient.BitbucketCloudClient); isBitbucketCloudClient {
-		if err != nil {
-			t.Logf("Warning: failed to close PR %d on Bitbucket Cloud (known froggit-go limitation): %v", prID, err)
-		}
-		return
-	}
 	assert.NoError(t, err)
 }

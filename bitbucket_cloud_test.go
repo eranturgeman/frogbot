@@ -15,11 +15,9 @@ const (
 	bitbucketCloudIntegrationTokenEnv = "FROGBOT_V3_TESTS_BITBUCKET_CLOUD_TOKEN"
 	bitbucketCloudGitCloneUrl         = "https://bitbucket.org/frogbot-e2e-test/frogbot-test.git"
 	bitbucketCloudRepoOwner           = "frogbot-e2e-test"
-	// Atlassian API tokens with Bitbucket scopes require the literal username "x-bitbucket-api-token-auth"
-	// for git's HTTP transport (clone/push), but that username is rejected by Bitbucket Cloud's REST API,
-	// which instead expects Bearer auth (no username at all). The two credentials can't be unified, so the
-	// git-only username is kept separate from the (empty) REST/env-var username via GitPushUsername.
-	bitbucketCloudGitPushUsername = "x-bitbucket-api-token-auth"
+	// Matches utils.toBasicAuth's own default for git operations. Bitbucket Cloud's REST API rejects
+	// this username though, hence GitPushUsername being kept separate from the (empty) REST username.
+	bitbucketCloudGitPushUsername = "x-token-auth"
 )
 
 func buildBitbucketCloudClient(t *testing.T, bitbucketCloudToken string) vcsclient.VcsClient {
