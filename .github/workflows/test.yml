@@ -192,6 +192,9 @@ jobs:
     name: GitHub Integration Tests
     needs: Pretest
     runs-on: ubuntu-latest
+    concurrency:
+      group: github-integration-fixture
+      cancel-in-progress: false
     env:
       JFROG_CLI_LOG_LEVEL: "DEBUG"
     steps:
@@ -234,6 +237,9 @@ jobs:
     needs: github-integration
     if: always()
     runs-on: ubuntu-latest
+    concurrency:
+      group: github-integration-fixture
+      cancel-in-progress: false
     env:
       JFROG_CLI_LOG_LEVEL: "DEBUG"
     steps:
@@ -269,6 +275,9 @@ jobs:
       max-parallel: 1
       matrix:
         os: [ ubuntu, windows, macos ]
+    concurrency:
+      group: azure-integration-fixture
+      cancel-in-progress: false
     env:
       JFROG_CLI_LOG_LEVEL: "DEBUG"
     steps:
@@ -311,6 +320,9 @@ jobs:
     needs: azure-integration
     if: always()
     runs-on: ubuntu-latest
+    concurrency:
+      group: azure-integration-fixture
+      cancel-in-progress: false
     env:
       JFROG_CLI_LOG_LEVEL: "DEBUG"
     steps:
@@ -346,6 +358,9 @@ jobs:
       max-parallel: 1
       matrix:
         os: [ ubuntu, windows, macos ]
+    concurrency:
+      group: gitlab-integration-fixture
+      cancel-in-progress: false
     env:
       JFROG_CLI_LOG_LEVEL: "DEBUG"
     steps:
@@ -388,6 +403,9 @@ jobs:
     needs: gitlab-integration
     if: always()
     runs-on: ubuntu-latest
+    concurrency:
+      group: gitlab-integration-fixture
+      cancel-in-progress: false
     env:
       JFROG_CLI_LOG_LEVEL: "DEBUG"
     steps:
