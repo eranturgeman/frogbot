@@ -5,12 +5,13 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/go-git/go-git/v5"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-git/go-git/v5"
 
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/jfrog/froggit-go/vcsclient"
@@ -135,6 +136,15 @@ func findRelevantPrID(pullRequests []vcsclient.PullRequestInfo, branch string) (
 	return
 }
 
+func findRelevantPrIDByBranchPrefix(pullRequests []vcsclient.PullRequestInfo, branchPrefix string, preExistingPrIDs map[int]bool) (prId int, branchName string) {
+	for _, pr := range pullRequests {
+		if strings.HasPrefix(pr.Source.Name, branchPrefix) && pr.Target.Name == mainBranch && !preExistingPrIDs[int(pr.ID)] {
+			return int(pr.ID), pr.Source.Name
+		}
+	}
+	return 0, ""
+}
+
 func getOpenPullRequests(t *testing.T, client vcsclient.VcsClient, testDetails *IntegrationTestDetails) []vcsclient.PullRequestInfo {
 	ctx := context.Background()
 	pullRequests, err := client.ListOpenPullRequests(ctx, testDetails.RepoOwner, testDetails.RepoName)
@@ -206,26 +216,29 @@ func runScanRepositoryCmd(t *testing.T, client vcsclient.VcsClient, testDetails 
 	unsetEnvs := setIntegrationTestEnvs(t, testDetails)
 	defer unsetEnvs()
 
+	gitManager := buildGitManager(t, testDetails)
+	defer cleanupLeftoverFrogbotPRs(t, client, testDetails, gitManager)
+
+	preExistingPrIDs := make(map[int]bool)
+	for _, pr := range getOpenPullRequests(t, client, testDetails) {
+		preExistingPrIDs[int(pr.ID)] = true
+	}
+
 	err = Exec(&scanrepository.ScanRepositoryCmd{}, utils.ScanRepository)
 	require.NoError(t, err)
 
-	gitManager := buildGitManager(t, testDetails)
 	pullRequests := getOpenPullRequests(t, client, testDetails)
 
-	expectedBranches := []string{
-		"frogbot-snyk-5aaa88cc32aaaf2d8d893decd0a1b284",
-		"frogbot-lodash-36ab76ead8f9cace70988ea19d280c93",
-		"frogbot-minimist-e6e68f7e53c2b59c6bd946e00af797f7",
-	}
-	for _, expectedBranch := range expectedBranches {
-		prId := findRelevantPrID(pullRequests, expectedBranch)
-		assert.NotZero(t, prId, "Expected to find PR for branch %s", expectedBranch)
+	expectedFixPackages := []string{"snyk", "lodash", "minimist"}
+	for _, pkg := range expectedFixPackages {
+		branchPrefix := scanRepoTestBranchNamePrefix + pkg + "-"
+		prId, branchName := findRelevantPrIDByBranchPrefix(pullRequests, branchPrefix, preExistingPrIDs)
+		assert.NotZero(t, prId, "Expected to find PR for package %s", pkg)
 		if prId != 0 {
 			closePullRequest(t, client, testDetails, prId)
-			assert.NoError(t, gitManager.RemoveRemoteBranch(expectedBranch))
+			assert.NoError(t, gitManager.RemoveRemoteBranch(branchName))
 		}
 	}
-	cleanupLeftoverFrogbotPRs(t, client, testDetails, gitManager)
 }
 
 func cleanupLeftoverFrogbotPRs(t *testing.T, client vcsclient.VcsClient, testDetails *IntegrationTestDetails, gitManager *utils.GitManager) {
@@ -238,6 +251,57 @@ func cleanupLeftoverFrogbotPRs(t *testing.T, client vcsclient.VcsClient, testDet
 				t.Logf("Warning: failed to remove leftover branch %s: %v", pr.Source.Name, err)
 			}
 		}
+	}
+}
+
+// A safety-net sweep, run as a separate CI step regardless of test outcome, and removes every branch and closes every open PR in the test repo,
+// except the default branch and the 'issues-branch' baseline.
+func cleanupIntegrationArtifacts(t *testing.T, client vcsclient.VcsClient, testDetails *IntegrationTestDetails) {
+	ctx := context.Background()
+
+	// buildGitManager reads the remote URL from the current directory's existing .git if one is
+	// present (e.g. this job's own checkout of the frogbot repo), so we must clone the fixture repo
+	// into a fresh directory first - otherwise branch removal silently targets the wrong remote.
+	tmpDir, restoreFunc := utils.ChangeToTempDirWithCallback(t)
+	defer func() {
+		assert.NoError(t, restoreFunc())
+	}()
+
+	cloneOptions := &git.CloneOptions{
+		URL: testDetails.GitCloneURL,
+		Auth: &githttp.BasicAuth{
+			Username: testDetails.GitUsername,
+			Password: testDetails.GitToken,
+		},
+		RemoteName:    "origin",
+		ReferenceName: utils.GetFullBranchName(mainBranch),
+		SingleBranch:  true,
+		Depth:         1,
+		Tags:          git.NoTags,
+	}
+	_, err := git.PlainClone(tmpDir, false, cloneOptions)
+	require.NoError(t, err)
+
+	gitManager := buildGitManager(t, testDetails)
+
+	branches, err := client.ListBranches(ctx, testDetails.RepoOwner, testDetails.RepoName)
+	require.NoError(t, err)
+	for _, branch := range branches {
+		if branch == mainBranch || branch == issuesBranch {
+			continue
+		}
+		t.Logf("Cleanup: removing leftover branch %s", branch)
+		if err := gitManager.RemoveRemoteBranch(branch); err != nil {
+			t.Logf("Warning: failed to remove leftover branch %s: %v", branch, err)
+		}
+	}
+
+	for _, pr := range getOpenPullRequests(t, client, testDetails) {
+		if pr.Source.Name == issuesBranch {
+			continue
+		}
+		t.Logf("Cleanup: closing leftover PR %s (ID: %d)", pr.Source.Name, pr.ID)
+		closePullRequest(t, client, testDetails, int(pr.ID))
 	}
 }
 
